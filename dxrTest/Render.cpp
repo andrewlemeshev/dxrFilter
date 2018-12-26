@@ -1142,6 +1142,8 @@ void DX12Render::updateSceneData(const glm::vec4 &cameraPos, const glm::mat4 &vi
 
   filterConstantDataPtr->projToPrevProj = oldViewProj * invViewProj;
   oldViewProj = viewProj;
+
+  sceneConstantBufferPtr->elapsedTime = float(rand())/float(RAND_MAX);
 }
 
 void DX12Render::nextFrame() {

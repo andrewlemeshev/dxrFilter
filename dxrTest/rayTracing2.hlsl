@@ -2,6 +2,7 @@
 #define RAYTRACING_HLSL
 
 #include "Shared.h"
+#include "noise.hlsl"
 
 static const float4 backgroundColor = float4(0.8f, 0.9f, 1.0f, 1.0f);
 static const float inShadowRadiance = 0.35f;
@@ -181,46 +182,69 @@ float random(float2 p) {
   return frac(cos(dot(p, K1)) * 12345.6789); // ver3
 }
 
-float3 randPosOnLightSphere(const float2 k) {
-  const float camPosX = constantBuffer.cameraPosition.x == 0.0f ? 1.0f : constantBuffer.cameraPosition.x;
-  const float camPosZ = constantBuffer.cameraPosition.z == 0.0f ? 1.0f : constantBuffer.cameraPosition.z;
+static const float4 magic = float4(1111.1111, 3141.5926, 2718.2818, 0);
+
+float3 randPosOnLightSphere(const float2 k, const float seed) {
+  //const float camPosX = constantBuffer.cameraPosition.x == 0.0f ? 1.0f : constantBuffer.cameraPosition.x;
+  //const float camPosZ = constantBuffer.cameraPosition.z == 0.0f ? 1.0f : constantBuffer.cameraPosition.z;
   const float3 lightPos = constantBuffer.lightPosition.xyz;
   const float radius = 5.0f;
 
-  const float2 p = float2(camPosX + 1.0f, camPosZ + 1.0f);
+  //const float2 p = float2(camPosX + 1.0f, camPosZ + 1.0f);
 
-  const float nums[] = {
-    frac(p.x * k.x),
-    frac(p.y * k.y),
-    frac(p.x * k.y),
-    frac(p.y * k.x),
-    frac(k.x / p.x),
-    frac(k.y / p.y),
-    frac(k.x / p.y),
-    frac(k.y / p.x),
-    frac(p.x*p.y / k.x),
-    frac(p.x*p.y / k.y),
-    frac(p.x*p.y * k.x),
-    frac(p.x*p.y * k.y)
-  };
+  //const float nums[] = {
+  //  frac(p.x * k.x),
+  //  frac(p.y * k.y),
+  //  frac(p.x * k.y),
+  //  frac(p.y * k.x),
+  //  frac(k.x / p.x),
+  //  frac(k.y / p.y),
+  //  frac(k.x / p.y),
+  //  frac(k.y / p.x),
+  //  frac(p.x*p.y / k.x),
+  //  frac(p.x*p.y / k.y),
+  //  frac(p.x*p.y * k.x),
+  //  frac(p.x*p.y * k.y)
+  //};
 
-  /*const int3 sign = int3(random(float2(nums[0], nums[1])) >= 0.5f ? 1 : -1,
-                         random(float2(nums[2], nums[3])) >= 0.5f ? 1 : -1,
-                         random(float2(nums[4], nums[5])) >= 0.5f ? 1 : -1);
+  ///*const int3 sign = int3(random(float2(nums[0], nums[1])) >= 0.5f ? 1 : -1,
+  //                       random(float2(nums[2], nums[3])) >= 0.5f ? 1 : -1,
+  //                       random(float2(nums[4], nums[5])) >= 0.5f ? 1 : -1);
 
-  const float3 rand = float3(random(float2(nums[6], nums[7])),
-                             random(float2(nums[8], nums[9])),
-                             random(float2(nums[10], nums[11])));*/
+  //const float3 rand = float3(random(float2(nums[6], nums[7])),
+  //                           random(float2(nums[8], nums[9])),
+  //                           random(float2(nums[10], nums[11])));*/
 
-  const int3 sign = int3(random(float2(nums[6], nums[7])) >= 0.5f ? 1 : -1,
-                         random(float2(nums[8], nums[9])) >= 0.5f ? 1 : -1,
-                         random(float2(nums[10], nums[11])) >= 0.5f ? 1 : -1);
+  //const int3 sign = int3(random(float2(nums[6], nums[7])) >= 0.5f ? 1 : -1,
+  //                       random(float2(nums[8], nums[9])) >= 0.5f ? 1 : -1,
+  //                       random(float2(nums[10], nums[11])) >= 0.5f ? 1 : -1);
 
-  const float3 rand = float3(random(float2(nums[0], nums[1])),
-                             random(float2(nums[2], nums[3])),
-                             random(float2(nums[4], nums[5])));
+  //const float3 rand = float3(random(float2(nums[0], nums[1])),
+  //                           random(float2(nums[2], nums[3])),
+  //                           random(float2(nums[4], nums[5])));
 
-  return lightPos + sign * rand * radius;
+  //return lightPos + sign * rand * radius;
+
+  const float2 tc = k.xy * magic.xy;
+  // scale texture coordinates
+
+  const float a = seed * magic.z + tc.y - tc.x;
+  const float3 skewed_seed = float3(a, a, a) + magic.yzw;
+  // scale and skew seed a bit to decrease noise correlation accross pixels
+  // (add some magic numbers to generate three seeds to decrease correlation
+  // between velocity coordinates)
+
+  float3 velocity;
+  velocity.x = cnoise(float3(tc.x, tc.y, skewed_seed.x));
+  velocity.y = cnoise(float3(tc.y, skewed_seed.y, tc.x));
+  velocity.z = cnoise(float3(skewed_seed.z, tc.x, tc.y));
+  // use noise to generate random direction
+  // (permutate arguments to decrease correlation even more)
+
+  velocity = normalize(velocity);
+  // normalize
+
+  return lightPos + velocity * radius;
 }
 
 [shader("raygeneration")]
@@ -231,7 +255,7 @@ void rayGen() {
   const float2 k = float2(xy) / float2(DispatchRaysDimensions().xy);
 
   // Screen position for the ray
-  float2 screenPos = (float2(xy) / float2(DispatchRaysDimensions().xy))*2.0f - 1.0f;
+  float2 screenPos = (k)*2.0f - 1.0f;
 
   // Invert Y for DirectX-style coordinates
   screenPos.y = -screenPos.y;
@@ -257,7 +281,9 @@ void rayGen() {
   uint currentRecursionDepth = 0;
   const float4 cameraRayDir = normalize(pos - cameraPos);
 
-  float3 rndPos = randPosOnLightSphere(k);
+  //const float seed = frac(constantBuffer.cameraPosition.x*constantBuffer.cameraPosition.y);
+  const float seed = constantBuffer.elapsedTime;
+  float3 rndPos = randPosOnLightSphere(k, seed);
 
   // Shadow component.
   // Trace a shadow ray.
@@ -271,16 +297,16 @@ void rayGen() {
 
   // Reflected component.
   float4 reflectedColor = float4(0, 0, 0, 0); 
-  // коэффициент отражения какой?
-  if (material.reflectanceCoef > 0.001) {
-    // Trace a reflection ray.
-    const float3 tmp = float3(cameraRayDir.x, cameraRayDir.y, cameraRayDir.z);
-    Ray reflectionRay = {pos.xyz, normalize(reflect(tmp, dir.xyz))};
-    float4 reflectionColor = traceRadianceRay(reflectionRay, currentRecursionDepth);
+  //// коэффициент отражения какой?
+  //if (material.reflectanceCoef > 0.001) {
+  //  // Trace a reflection ray.
+  //  const float3 tmp = float3(cameraRayDir.x, cameraRayDir.y, cameraRayDir.z);
+  //  Ray reflectionRay = {pos.xyz, normalize(reflect(tmp, dir.xyz))};
+  //  float4 reflectionColor = traceRadianceRay(reflectionRay, currentRecursionDepth);
 
-    float3 fresnelR = fresnelReflectanceSchlick(cameraRayDir.xyz, dir.xyz, albedoColor.xyz);
-    reflectedColor = material.reflectanceCoef * float4(fresnelR, 1) * reflectionColor;
-  }
+  //  float3 fresnelR = fresnelReflectanceSchlick(cameraRayDir.xyz, dir.xyz, albedoColor.xyz);
+  //  reflectedColor = material.reflectanceCoef * float4(fresnelR, 1) * reflectionColor;
+  //}
 
   float4 phongColor = сalculatePhong(albedoColor, pos.xyz, cameraRayDir.xyz, dir.xyz, shadowRayHit, material.diffuseCoef, material.specularCoef, material.specularPower);
   float4 color = phongColor + reflectedColor;

@@ -171,6 +171,8 @@ void main(uint3 DTid : SV_DispatchThreadID) {
 
   //finalColor /= 4.0f;
   const float alpha = 0.2f;
+
+  // откоментить дл€ темпоральной аккумул€ции
   //finalColor = alpha * currentColor + (1.0f - alpha) * finalColor;
   finalColor = currentColor;
   outputColor[coords] = finalColor;

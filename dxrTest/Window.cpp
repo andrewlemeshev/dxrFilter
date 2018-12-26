@@ -1,5 +1,11 @@
 #include "Window.h"
 
+#define KEY_STACK_SIZE 50
+
+//std::vector<KeyState> stack(KEY_STACK_SIZE);
+//uint32_t stackSize = 0;
+bool keysState[GLFW_KEY_LAST + 1];
+
 void throwIfFailed(const HRESULT &hr, const std::string &string) {
   if (FAILED(hr)) throw std::runtime_error(string);
 }
@@ -8,9 +14,32 @@ void throwIf(const bool &var, const std::string &string) {
   if (var) throw std::runtime_error(string);
 }
 
-Window::Window() {}
+void error_callback(int error, const char* description) {
+  throwIf(true, std::string(description));
+}
 
-Window::~Window() {}
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+  /*if (stackSize >= KEY_STACK_SIZE) return;
+
+  stack[stackSize] = {key, action};
+  ++stackSize;*/
+
+  keysState[key] = action != GLFW_RELEASE;
+
+  //if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) glfwSetWindowShouldClose(window, GLFW_TRUE); 
+}
+
+Window::Window() {
+  throwIf(!glfwInit(), "Could not init glfw");
+
+  glfwSetErrorCallback(error_callback);
+}
+
+Window::~Window() {
+  glfwDestroyWindow(window);
+
+  glfwTerminate();
+}
 
 void Window::init(HINSTANCE hInstance, const int showWnd, const uint32_t &width,
                   const uint32_t &height, bool fullscreen) {
@@ -19,16 +48,23 @@ void Window::init(HINSTANCE hInstance, const int showWnd, const uint32_t &width,
   this->fullscreen = fullscreen;
   this->hInstance = hInstance;
 
+  GLFWmonitor* mon = nullptr;
+
   if (fullscreen) {
-    HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    mon = glfwGetPrimaryMonitor();
+    const GLFWvidmode* vidMode = glfwGetVideoMode(mon);
+    this->size.width = vidMode->width;
+    this->size.height = vidMode->height;
+
+    /*HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi = {sizeof(mi)};
     GetMonitorInfo(hmon, &mi);
 
     this->size.width = mi.rcMonitor.right - mi.rcMonitor.left;
-    this->size.height = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    this->size.height = mi.rcMonitor.bottom - mi.rcMonitor.top;*/
   }
 
-  WNDCLASSEX wc;
+  /*WNDCLASSEX wc;
 
   wc.cbSize = sizeof(WNDCLASSEX);
   wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -47,22 +83,29 @@ void Window::init(HINSTANCE hInstance, const int showWnd, const uint32_t &width,
 
   hwnd = CreateWindowEx(NULL, windowName, windowTitle, WS_OVERLAPPEDWINDOW,
                         CW_USEDEFAULT, CW_USEDEFAULT, this->size.width,
-                        this->size.height, NULL, NULL, hInstance, NULL);
+                        this->size.height, NULL, NULL, hInstance, NULL);*/
 
-  throwIf(hwnd == nullptr, "Error creating window");
+  glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+  window = glfwCreateWindow(this->size.width, this->size.height, windowTitleC, mon, nullptr);
+  throwIf(window == nullptr, "Error creating window");
 
-  if (fullscreen) {
+  hwnd = glfwGetWin32Window(window);
+  throwIf(hwnd == nullptr, "Error getting hwnd");
+
+  /*if (fullscreen) {
     SetWindowLong(hwnd, GWL_STYLE, 0);
   }
 
   ShowWindow(hwnd, showWnd);
-  UpdateWindow(hwnd);
+  UpdateWindow(hwnd);*/
 
   WINDOWINFO info;
   GetWindowInfo(hwnd, &info);
 
   size.x = info.rcWindow.left;
   size.y = info.rcWindow.top;
+
+  glfwSetKeyCallback(window, key_callback);
 }
 
 void Window::resize(const uint32_t &width, const uint32_t &height) {
@@ -109,6 +152,7 @@ bool Window::isFullscreen() const { return fullscreen; }
 uint32_t Window::getWidth() const { return size.width; }
 uint32_t Window::getHeight() const { return size.height; }
 HWND Window::getHWND() const { return hwnd; }
+GLFWwindow* Window::getWindow() const { return window; }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
   switch (msg) {
