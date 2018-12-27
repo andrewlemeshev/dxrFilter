@@ -52,9 +52,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <FxCompile Include="ComputeShader.hlsl">
-      <Filter>Resource Files</Filter>
-    </FxCompile>
     <FxCompile Include="default.hlsl">
       <Filter>Resource Files</Filter>
     </FxCompile>
@@ -64,13 +61,13 @@
     <FxCompile Include="rayTracing2.hlsl">
       <Filter>Resource Files</Filter>
     </FxCompile>
-    <FxCompile Include="atrousFilter.hlsl">
-      <Filter>Resource Files</Filter>
-    </FxCompile>
     <FxCompile Include="reproj.hlsl">
       <Filter>Resource Files</Filter>
     </FxCompile>
     <FxCompile Include="noise.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+    <FxCompile Include="toneMapping.hlsl">
       <Filter>Resource Files</Filter>
     </FxCompile>
   </ItemGroup>

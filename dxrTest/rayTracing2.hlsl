@@ -184,6 +184,35 @@ float random(float2 p) {
 
 static const float4 magic = float4(1111.1111, 3141.5926, 2718.2818, 0);
 
+float3 permute(float3 x) {
+  return mod289(((x*34.0) + 1.0)*x);
+}
+
+uint RNG(inout uint state) {
+  uint x = state;
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 15;
+  state = x;
+  return x;
+}
+
+float randomFloat01(inout uint state) {
+  return (RNG(state) & 0xFFFFFF) / 16777216.0f;
+}
+
+float3 randomInUnitSphere(const uint state) {
+  uint tmp = state;
+  const float z = randomFloat01(tmp) * 2.0f - 1.0f;
+  const float t = randomFloat01(tmp) * 2.0f * 3.1415926f;
+  const float r = sqrt(max(0.0, 1.0f - z * z));
+  const float x = r * cos(t);
+  const float y = r * sin(t);
+  float3 res = float3(x, y, z);
+  res *= pow(randomFloat01(tmp), 1.0 / 3.0);
+  return res;
+}
+
 float3 randPosOnLightSphere(const float2 k, const float seed) {
   //const float camPosX = constantBuffer.cameraPosition.x == 0.0f ? 1.0f : constantBuffer.cameraPosition.x;
   //const float camPosZ = constantBuffer.cameraPosition.z == 0.0f ? 1.0f : constantBuffer.cameraPosition.z;
@@ -234,12 +263,19 @@ float3 randPosOnLightSphere(const float2 k, const float seed) {
   // (add some magic numbers to generate three seeds to decrease correlation
   // between velocity coordinates)
 
+  const uint2 DTid = uint2(DispatchRaysIndex().x, DispatchRaysIndex().y);
+  //const uint rngState = (DTid.x * 1973 + DTid.y * 9277 + asuint(seed) * 26699) | 1;
+  const uint rngState = (DTid.x * 1973 + DTid.y * 9277 + uint(seed) * 26699) | 1;
+
   float3 velocity;
-  velocity.x = cnoise(float3(tc.x, tc.y, skewed_seed.x));
+  /*velocity.x = cnoise(float3(tc.x, tc.y, skewed_seed.x));
   velocity.y = cnoise(float3(tc.y, skewed_seed.y, tc.x));
-  velocity.z = cnoise(float3(skewed_seed.z, tc.x, tc.y));
+  velocity.z = cnoise(float3(skewed_seed.z, tc.x, tc.y));*/
   // use noise to generate random direction
   // (permutate arguments to decrease correlation even more)
+
+  //velocity = randomInUnitSphere(asuint(a));
+  velocity = randomInUnitSphere(rngState);
 
   velocity = normalize(velocity);
   // normalize

@@ -193,6 +193,9 @@ DX12Render::DX12Render() {
   filter.depthBufferHeapIndex = UINT32_MAX;
   filter.lastFrameColorHeapIndex = UINT32_MAX;
   filter.lastFrameDepthHeapIndex = UINT32_MAX;
+
+  toneMapping.outputUAVDescIndex = UINT32_MAX;
+  toneMapping.filterDescIndex = UINT32_MAX;
 }
 
 DX12Render::~DX12Render() {
@@ -1143,7 +1146,7 @@ void DX12Render::updateSceneData(const glm::vec4 &cameraPos, const glm::mat4 &vi
   filterConstantDataPtr->projToPrevProj = oldViewProj * invViewProj;
   oldViewProj = viewProj;
 
-  sceneConstantBufferPtr->elapsedTime = float(rand())/float(RAND_MAX);
+  sceneConstantBufferPtr->elapsedTime = float(rand());// / float(RAND_MAX);
 }
 
 void DX12Render::nextFrame() {
@@ -1413,31 +1416,55 @@ void DX12Render::filterPart() {
 
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
+      CD3DX12_RESOURCE_BARRIER::UAV(filter.filterOutput),
+      CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ)
+    };
+
+    commandList->ResourceBarrier(_countof(barriers), barriers);
+  }
+
+  commandList->SetComputeRootSignature(toneMapping.rootSignature);
+
+  commandList->SetDescriptorHeaps(1, &toneMapping.heap.handle);
+
+  commandList->SetComputeRootDescriptorTable(0, toneMapping.outputUAVDesc);
+  commandList->SetComputeRootDescriptorTable(1, toneMapping.filterDesc);
+
+  commandList->SetPipelineState(toneMapping.pso);
+
+  commandList->Dispatch(dispatchX, dispatchY, 1);
+
+  {
+    const D3D12_RESOURCE_BARRIER barriers[] = {
       CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
-      CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
+      CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_SOURCE),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.colorLast, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.depthLast, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST),
-      CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.depth, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_SOURCE)
+      CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.depth, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_SOURCE),
+      CD3DX12_RESOURCE_BARRIER::Transition(toneMapping.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
     };
 
     commandList->ResourceBarrier(_countof(barriers), barriers);
   }
   
   // мне еще нужно скопировать в ласт буферы
-  commandList->CopyResource(renderTargets[frameIndex], filter.filterOutput);
+  //commandList->CopyResource(renderTargets[frameIndex], filter.filterOutput);
+  commandList->CopyResource(renderTargets[frameIndex], toneMapping.output);
   commandList->CopyResource(filter.colorLast, filter.filterOutput);
   commandList->CopyResource(filter.depthLast, gBuffer.depth);
 
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
       CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+      //CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
       CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
       CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.color, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET),
       CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.normal, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET),
       CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.depth, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.colorLast, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.depthLast, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
-      CD3DX12_RESOURCE_BARRIER::Transition(fallback.raytracingOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+      CD3DX12_RESOURCE_BARRIER::Transition(fallback.raytracingOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+      CD3DX12_RESOURCE_BARRIER::Transition(toneMapping.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     };
 
     commandList->ResourceBarrier(_countof(barriers), barriers);
@@ -2495,10 +2522,10 @@ void DX12Render::buildShaderTables() {
 void DX12Render::createRaytracingOutputResource(const uint32_t &width, const uint32_t &height) {
   HRESULT hr;
   //const DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM;
-  const DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  //const DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
   // Create the output resource. The dimensions and format should match the swap-chain.
-  auto uavDesc = CD3DX12_RESOURCE_DESC::Tex2D(format, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+  auto uavDesc = CD3DX12_RESOURCE_DESC::Tex2D(rayTracingOutputFormat, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
   auto defaultHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
   hr = device->CreateCommittedResource(
@@ -2582,6 +2609,8 @@ void DX12Render::createFilterResources(const uint32_t &width, const uint32_t &he
   createFilterConstantBuffer();
 
   createFilterPSO();
+
+  createToneMappingResources(width, height);
 }
 
 void DX12Render::createFilterDescriptorHeap() {
@@ -2610,10 +2639,10 @@ void DX12Render::createFilterDescriptorHeap() {
 void DX12Render::createFilterOutputTexture(const uint32_t &width, const uint32_t &height) {
   HRESULT hr;
   
-  const DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  //const DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
   // Create the output resource. The dimensions and format should match the swap-chain.
-  auto uavDesc = CD3DX12_RESOURCE_DESC::Tex2D(format, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+  auto uavDesc = CD3DX12_RESOURCE_DESC::Tex2D(filterOutputFormat, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
   auto defaultHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
   hr = device->CreateCommittedResource(
@@ -2641,7 +2670,7 @@ void DX12Render::createFilterLastFrameData(const uint32_t &width, const uint32_t
   // создадим для начала для текущих текстурок
 
   //createTextureSRV(filter.heap, gBuffer.color, DXGI_FORMAT_R8G8B8A8_UNORM, filter.colorBufferHeapIndex, filter.colorBufferDescriptor);
-  createTextureSRV(filter.heap, fallback.raytracingOutput, DXGI_FORMAT_R8G8B8A8_UNORM, filter.colorBufferHeapIndex, filter.colorBufferDescriptor);
+  createTextureSRV(filter.heap, fallback.raytracingOutput, rayTracingOutputFormat, filter.colorBufferHeapIndex, filter.colorBufferDescriptor);
   createTextureSRV(filter.heap, gBuffer.depth, DXGI_FORMAT_R32_FLOAT, filter.depthBufferHeapIndex, filter.depthBufferDescriptor);
 
   throwIf(filter.colorBufferHeapIndex + 1 != filter.depthBufferHeapIndex, "bad heap index");
@@ -2650,7 +2679,7 @@ void DX12Render::createFilterLastFrameData(const uint32_t &width, const uint32_t
 
   // color buffer
 
-  DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  DXGI_FORMAT format = rayTracingOutputFormat;
 
   // Create the output resource. The dimensions and format should match the swap-chain.
   auto uavDesc = CD3DX12_RESOURCE_DESC::Tex2D(format, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
@@ -2676,7 +2705,7 @@ void DX12Render::createFilterLastFrameData(const uint32_t &width, const uint32_t
   device->CreateUnorderedAccessView(filter.filterOutput, nullptr, &UAVDesc, uavDescriptorHandle);
   filter.filterOutputUAVDesc = CD3DX12_GPU_DESCRIPTOR_HANDLE(filter.heap.handle->GetGPUDescriptorHandleForHeapStart(), filter.filterOutputUAVDescIndex, filter.heap.hardwareSize);*/
 
-  createTextureSRV(filter.heap, filter.colorLast, DXGI_FORMAT_R8G8B8A8_UNORM, filter.lastFrameColorHeapIndex, filter.lastFrameColorDescriptor);
+  createTextureSRV(filter.heap, filter.colorLast, rayTracingOutputFormat, filter.lastFrameColorHeapIndex, filter.lastFrameColorDescriptor);
   throwIf(filter.depthBufferHeapIndex + 1 != filter.lastFrameColorHeapIndex, "bad heap index");
 
   // depth buffer
@@ -2827,6 +2856,152 @@ void DX12Render::createFilterPSO() {
   };
 
   hr = device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&filter.pso));
+  throwIfFailed(hr, "Failed to create compute shader");
+
+  //SAFE_RELEASE(computeShader)
+  //SAFE_RELEASE(errorBuff)
+}
+
+void DX12Render::createToneMappingResources(const uint32_t &width, const uint32_t &height) {
+  createToneMappingDescriptorHeap();
+
+  createToneMappingOutputTexture(width, height);
+
+  createToneMappingPSO();
+}
+
+void DX12Render::createToneMappingDescriptorHeap() {
+  HRESULT hr;
+
+  // возможно здесь все же придется еще раз создать дескрипторы для основных текстурок
+  const uint32_t filterTextures = 1 + 1;                     // output, color
+  const uint32_t descriptorsCount = filterTextures;
+
+  const D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {
+    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+    descriptorsCount,
+    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+    0
+  };
+
+  hr = device->CreateDescriptorHeap(&descriptorHeapDesc, IID_PPV_ARGS(&toneMapping.heap.handle));
+  throwIfFailed(hr, "Could not create descriptor heap for filter");
+  toneMapping.heap.handle->SetName(L"descriptor heap for filter");
+
+  toneMapping.heap.hardwareSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  toneMapping.heap.allocatedCount = 0;
+}
+
+void DX12Render::createToneMappingOutputTexture(const uint32_t &width, const uint32_t &height) {
+  HRESULT hr;
+
+  //const DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+  // Create the output resource. The dimensions and format should match the swap-chain.
+  auto uavDesc = CD3DX12_RESOURCE_DESC::Tex2D(toneMappingOutputFormat, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+  auto defaultHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+  hr = device->CreateCommittedResource(
+    &defaultHeapProperties,
+    D3D12_HEAP_FLAG_NONE,
+    &uavDesc,
+    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+    nullptr,
+    IID_PPV_ARGS(&toneMapping.output)
+  );
+  throwIfFailed(hr, "Could not create raytracing output resource");
+
+  toneMapping.output->SetName(L"Filter output resource");
+
+  D3D12_CPU_DESCRIPTOR_HANDLE uavDescriptorHandle;
+  toneMapping.outputUAVDescIndex = allocateDescriptor(toneMapping.heap, &uavDescriptorHandle, toneMapping.outputUAVDescIndex);
+
+  D3D12_UNORDERED_ACCESS_VIEW_DESC UAVDesc = {};
+  UAVDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+  device->CreateUnorderedAccessView(toneMapping.output, nullptr, &UAVDesc, uavDescriptorHandle);
+  toneMapping.outputUAVDesc = CD3DX12_GPU_DESCRIPTOR_HANDLE(toneMapping.heap.handle->GetGPUDescriptorHandleForHeapStart(), toneMapping.outputUAVDescIndex, toneMapping.heap.hardwareSize);
+
+  createTextureSRV(toneMapping.heap, filter.filterOutput, filterOutputFormat, toneMapping.filterDescIndex, toneMapping.filterDesc);
+}
+
+void DX12Render::createToneMappingPSO() {
+  HRESULT hr;
+
+  // create root signature
+
+  CD3DX12_DESCRIPTOR_RANGE ranges[2];
+  ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+  ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+
+  // тут по идее можно по другому раскидать
+  CD3DX12_ROOT_PARAMETER rootParameters[2];
+  rootParameters[0].InitAsDescriptorTable(1, &ranges[0]);
+  rootParameters[1].InitAsDescriptorTable(1, &ranges[1]);
+
+  CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+  rootSignatureDesc.Init(
+    _countof(rootParameters),
+    rootParameters,
+    0,
+    nullptr,
+    D3D12_ROOT_SIGNATURE_FLAG_NONE
+  );
+
+  ID3DBlob* signature;
+  hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr);
+  throwIfFailed(hr, "Failed to serialize root signature");
+
+  if (toneMapping.rootSignature == nullptr) {
+    hr = device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&toneMapping.rootSignature));
+    throwIfFailed(hr, "Failed to create root signature");
+  }
+
+#if defined(_DEBUG)
+  // Enable better shader debugging with the graphics debugging tools.
+  UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+  UINT compileFlags = 0;
+#endif
+
+  // compile vertex shader
+  ID3DBlob* computeShader; // d3d blob for holding vertex shader bytecode
+  ID3DBlob* errorBuff; // a buffer holding the error data if any
+  hr = D3DCompileFromFile(
+    L"toneMapping.hlsl",
+    nullptr,
+    nullptr,
+    "main",
+    "cs_5_0",
+    compileFlags,
+    0,
+    &computeShader,
+    &errorBuff
+  );
+
+  if (FAILED(hr)) {
+    OutputDebugStringA((char*)errorBuff->GetBufferPointer());
+    throw std::runtime_error("Compute shader creation error");
+  }
+
+  // fill out a shader bytecode structure, which is basically just a pointer
+  // to the shader bytecode and the size of the shader bytecode
+  const D3D12_SHADER_BYTECODE computeShaderBytecode = {
+    computeShader->GetBufferPointer(),
+    computeShader->GetBufferSize()
+  };
+
+  const D3D12_COMPUTE_PIPELINE_STATE_DESC desc{
+    toneMapping.rootSignature,// рут сигнатура
+    computeShaderBytecode,// шейдер
+    0,
+    {
+      nullptr,
+      0
+    },
+    D3D12_PIPELINE_STATE_FLAG_NONE
+  };
+
+  hr = device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&toneMapping.pso));
   throwIfFailed(hr, "Failed to create compute shader");
 
   //SAFE_RELEASE(computeShader)

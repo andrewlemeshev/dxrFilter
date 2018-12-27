@@ -124,6 +124,21 @@ struct Filter {
   // что-то еще?
 };
 
+struct ToneMapping {
+  ID3D12Resource* output;
+
+  D3D12_GPU_DESCRIPTOR_HANDLE outputUAVDesc;
+  uint32_t outputUAVDescIndex;
+
+  D3D12_GPU_DESCRIPTOR_HANDLE filterDesc;
+  uint32_t filterDescIndex;
+
+  DescriptorHeap heap;
+
+  ID3D12RootSignature* rootSignature;
+  ID3D12PipelineState* pso;
+};
+
 enum class GlobalRootSignatureParams : uint32_t {
   OUTPUT_VIEW_SLOT = 0,
   ACCELERATION_STRUCTURE_SLOT,
@@ -243,6 +258,8 @@ private:
   ID3D12Resource* ornBuffer = nullptr;
   D3D12_VERTEX_BUFFER_VIEW ornBufferView;
 
+  //DXGI_FORMAT rayTracingOutputFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+  DXGI_FORMAT rayTracingOutputFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
   RayTracing fallback;
   SceneConstantBuffer* sceneConstantBufferPtr = nullptr;
   RayGenConstantBuffer rayGenCB;
@@ -253,9 +270,14 @@ private:
 
   DescriptorHeap rtHeap;
 
+  //DXGI_FORMAT filterOutputFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+  DXGI_FORMAT filterOutputFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
   Filter filter;
   glm::mat4 oldViewProj;
   FilterConstantData* filterConstantDataPtr = nullptr;
+
+  DXGI_FORMAT toneMappingOutputFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+  ToneMapping toneMapping;
 
   void loadModels(std::vector<uint32_t> &indices, std::vector<Vertex> &vertices);
 
@@ -279,6 +301,11 @@ private:
   void createFilterLastFrameData(const uint32_t &width, const uint32_t &height);
   void createFilterConstantBuffer();
   void createFilterPSO();
+
+  void createToneMappingResources(const uint32_t &width, const uint32_t &height);
+  void createToneMappingDescriptorHeap();
+  void createToneMappingOutputTexture(const uint32_t &width, const uint32_t &height);
+  void createToneMappingPSO();
 
   //void buildGeometryDesc(std::array<std::vector<D3D12_RAYTRACING_GEOMETRY_DESC>, bottomLevelCount> &descs);
   //AccelerationStructureBuffers buildBottomLevel(const std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> &geometryDescs, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE);
