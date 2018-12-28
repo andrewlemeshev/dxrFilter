@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\work\RadeonProRTEffects\CMakeFiles\febf7353f999e779e8b2172e55ff2ed8\INSTALL_force.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{EC4F89FE-1CA2-3C71-99D4-F7BB1700FD6D}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
