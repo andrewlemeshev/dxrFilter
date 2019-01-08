@@ -1,6 +1,7 @@
 #include "Render.h"
 
 #include <fstream>
+#include <random>
 
 #include "SceneData.h"
 #include "D3D12RaytracingHelpers.hpp"
@@ -196,6 +197,8 @@ DX12Render::DX12Render() {
 
   toneMapping.outputUAVDescIndex = UINT32_MAX;
   toneMapping.filterDescIndex = UINT32_MAX;
+
+  uintRandTextHeapIndex = UINT32_MAX;
 }
 
 DX12Render::~DX12Render() {
@@ -593,6 +596,10 @@ void DX12Render::init(HWND hwnd, const uint32_t &width, const uint32_t &height, 
   memcpy(&iData[coneIStart], &indices[coneIStart], coneISize);
   iBufferUploadHeap->Unmap(0, nullptr);
 
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+  ID3D12Resource* uploadBuffer = nullptr;
+  createRandomUintTexture(width, height, &uploadBuffer, &footprint);
+
   // we are now creating a command with the command list to copy the data from the upload heap to the default heap
   commandList->Reset(commandAllocator[frameIndex], nullptr);
   //UpdateSubresources(commandList, boxVertexBuffer, vBufferUploadHeap, 0, 0, _countof(vertexData), vertexData);
@@ -611,6 +618,15 @@ void DX12Render::init(HWND hwnd, const uint32_t &width, const uint32_t &height, 
 
   // transition the vertex buffer data from copy destination state to vertex buffer state
   commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(boxIndexBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
+
+  commandList->CopyTextureRegion(
+    &CD3DX12_TEXTURE_COPY_LOCATION(uintRandText, 0),
+    0, 0, 0,
+    &CD3DX12_TEXTURE_COPY_LOCATION(uploadBuffer, footprint),
+    nullptr
+  );
+
+  commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(uintRandText, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
 
   // Now we execute the command list to upload the initial assets (triangle data)
   commandList->Close();
@@ -713,6 +729,7 @@ void DX12Render::init(HWND hwnd, const uint32_t &width, const uint32_t &height, 
 
   SAFE_RELEASE(vBufferUploadHeap)
   SAFE_RELEASE(iBufferUploadHeap)
+  SAFE_RELEASE(uploadBuffer);
 
   //createRTResources(width, height);
   //createFilterResources(width, height);
@@ -985,9 +1002,9 @@ void DX12Render::prepareRender(const uint32_t &instanceCount, const glm::mat4 &v
 
   //SAFE_RELEASE(instanceBuffer)
 
-  ASSERT((instanceCount + 1) * sizeof(glm::mat4) < UINT32_MAX)
+  ASSERT((instanceCount + 2) * sizeof(glm::mat4) < UINT32_MAX)
 
-  const uint32_t realInstanceCount = instanceCount + 1;
+  const uint32_t realInstanceCount = instanceCount + 2;
   const uint32_t size = realInstanceCount * sizeof(glm::mat4);
 
   //ASSERT(realInstanceCount == 2)
@@ -1069,7 +1086,8 @@ void DX12Render::prepareRender(const uint32_t &instanceCount, const glm::mat4 &v
       &CD3DX12_RESOURCE_DESC::Buffer(instanceBufferSize),
       D3D12_RESOURCE_STATE_GENERIC_READ, // ???
       nullptr,
-      IID_PPV_ARGS(&instanceBuffer));
+      IID_PPV_ARGS(&instanceBuffer)
+    );
 
     throwIfFailed(hr, "Failed to create instance buffer");
 
@@ -1086,8 +1104,14 @@ void DX12Render::prepareRender(const uint32_t &instanceCount, const glm::mat4 &v
   //const glm::mat4 matrix = glm::mat4(1.0f);
   //const glm::mat4 matrix = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 2.0f, 0.0f));
   const glm::mat4 matrix = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 2.0f, 0.0f));
-
+  
   memcpy(&instanceBufferPtr[0], &matrix, sizeof(glm::mat4));
+
+  // в первый раз когда мы сюда заходим этого буфера еще нет
+  if (sceneConstantBufferPtr != nullptr) {
+    const glm::mat4 lightPos = glm::translate(glm::mat4(1.0f), glm::vec3(sceneConstantBufferPtr->lightPosition));
+    memcpy(&instanceBufferPtr[1], &lightPos, sizeof(glm::mat4));
+  }
   /*for (uint32_t i = 0; i < realInstanceCount; ++i) {
     memcpy(&instanceBufferPtr[i], &matrix, sizeof(glm::mat4));
   }*/
@@ -1096,7 +1120,7 @@ void DX12Render::prepareRender(const uint32_t &instanceCount, const glm::mat4 &v
 }
 
 void DX12Render::computePartHost(GPUBuffer<ComputeData> &boxBuffer, GPUBuffer<ComputeData> &icosahedronBuffer, GPUBuffer<ComputeData> &coneBuffer) {
-  uint32_t index = 1; // плоскость - первая
+  uint32_t index = 2; // плоскость, затем сфера
 
   throwIf(boxBuffer.size() == 0, "box buffer size == 0");
   throwIf(icosahedronBuffer.size() == 0, "icosahedron buffer size == 0");
@@ -1175,8 +1199,8 @@ void DX12Render::gBufferPart(const uint32_t &boxCount, const uint32_t &icosahedr
   //HRESULT hr;
 
   // начинаем записывать команды к исполнению (ничего не требуется дополнительно)
-  commandList->RSSetViewports(1, &viewport); // вьюпорт
-  commandList->RSSetScissorRects(1, &scissorRect); // скиссор
+  commandList->RSSetViewports(1, &viewport);
+  commandList->RSSetScissorRects(1, &scissorRect);
 
   // информация текстурках которые мы будем заполнять нормалями и цветом
   CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(gBuffer.cDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), 0, rtvDescriptorSize);
@@ -1207,7 +1231,7 @@ void DX12Render::gBufferPart(const uint32_t &boxCount, const uint32_t &icosahedr
   commandList->IASetIndexBuffer(&boxIndexBufferView);
   
   const uint32_t planeStart = 0;
-  const uint32_t boxStart = planeStart + 1;
+  const uint32_t boxStart = planeStart + 2;
   const uint32_t icosahedronStart = boxStart + boxCount;
   const uint32_t coneStart = icosahedronStart + icosahedronCount;
 
@@ -1227,6 +1251,7 @@ void DX12Render::gBufferPart(const uint32_t &boxCount, const uint32_t &icosahedr
   const uint32_t coneICount = planeMaterialCB.cone.indicesCount;
 
   commandList->DrawIndexedInstanced(planeICount,     1,                planeIStart,     planeVStart,     planeStart);
+  commandList->DrawIndexedInstanced(icosphereICount, 1,                icosphereIStart, icosphereVStart, planeStart + 1);
   commandList->DrawIndexedInstanced(boxICount,       boxCount,         boxIStart,       boxVStart,       boxStart);
   commandList->DrawIndexedInstanced(icosphereICount, icosahedronCount, icosphereIStart, icosphereVStart, icosahedronStart);
   commandList->DrawIndexedInstanced(coneICount,      coneCount,        coneIStart,      coneVStart,      coneStart);
@@ -1333,6 +1358,7 @@ void DX12Render::rayTracingPart() {
   commandList->SetComputeRootDescriptorTable(static_cast<uint32_t>(GlobalRootSignatureParams::GBUFFER_TEXTURES), fallback.colorBufferDescriptor);
   commandList->SetComputeRootConstantBufferView(static_cast<uint32_t>(GlobalRootSignatureParams::SCENE_CONSTANT), fallback.sceneConstantBuffer->GetGPUVirtualAddress());
   commandList->SetComputeRootDescriptorTable(static_cast<uint32_t>(GlobalRootSignatureParams::VERTEX_BUFFERS), fallback.indexDescs.gpuDescriptorHandle);
+  commandList->SetComputeRootDescriptorTable(static_cast<uint32_t>(GlobalRootSignatureParams::RANDOM_TEXTURE), uintRandTextDescriptor);
 
   //D3D12_DISPATCH_RAYS_DESC dispatchDesc = {};
   /*fallback.commandList->SetDescriptorHeaps(1, &rtHeap);
@@ -1855,10 +1881,11 @@ void DX12Render::createRootSignatures() {
 
     serializeRootSignature(globalRootSignatureDesc, &fallback.globalRootSignature);*/
 
-    CD3DX12_DESCRIPTOR_RANGE ranges[3];
+    CD3DX12_DESCRIPTOR_RANGE ranges[4];
     ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
     ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 1);
     ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 3);
+    ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 1);
 
     CD3DX12_ROOT_PARAMETER rootParameters[static_cast<uint32_t>(GlobalRootSignatureParams::COUNT)];
     rootParameters[static_cast<uint32_t>(GlobalRootSignatureParams::OUTPUT_VIEW_SLOT)].InitAsDescriptorTable(1, &ranges[0]);
@@ -1866,6 +1893,7 @@ void DX12Render::createRootSignatures() {
     rootParameters[static_cast<uint32_t>(GlobalRootSignatureParams::GBUFFER_TEXTURES)].InitAsDescriptorTable(1, &ranges[2]);
     rootParameters[static_cast<uint32_t>(GlobalRootSignatureParams::SCENE_CONSTANT)].InitAsConstantBufferView(0);
     rootParameters[static_cast<uint32_t>(GlobalRootSignatureParams::VERTEX_BUFFERS)].InitAsDescriptorTable(1, &ranges[1]);
+    rootParameters[static_cast<uint32_t>(GlobalRootSignatureParams::RANDOM_TEXTURE)].InitAsDescriptorTable(1, &ranges[3]);
 
     CD3DX12_ROOT_SIGNATURE_DESC globalRootSignatureDesc(ARRAYSIZE(rootParameters), rootParameters);
 
@@ -2036,7 +2064,8 @@ void DX12Render::createRTDescriptorHeap() {
   const uint32_t rtBuffers = 2;                        // const buffer, material
   const uint32_t indexVertexBuffers = 2;               // index and vertex buffers
   const uint32_t rtTextures = 4;                       // output, color, normal, depth
-  const uint32_t descriptorsCount = bottomStructCount + topStructCount + rtBuffers + indexVertexBuffers + rtTextures;
+  const uint32_t randomTexture = 1;                    // random texture buffer for number generation
+  const uint32_t descriptorsCount = bottomStructCount + topStructCount + rtBuffers + indexVertexBuffers + rtTextures + randomTexture;
 
   const D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {
     D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
@@ -2584,6 +2613,17 @@ void DX12Render::createDescriptors() {
   createTextureSRV(rtHeap, gBuffer.color, DXGI_FORMAT_R8G8B8A8_UNORM,  fallback.colorBufferHeapIndex,  fallback.colorBufferDescriptor);
   createTextureSRV(rtHeap, gBuffer.normal, DXGI_FORMAT_R32G32B32A32_FLOAT, fallback.normalBufferHeapIndex, fallback.normalBufferDescriptor);
   createTextureSRV(rtHeap, gBuffer.depth, DXGI_FORMAT_R32_FLOAT,  fallback.depthBufferHeapIndex,  fallback.depthBufferDescriptor);
+
+  // random texture descriptor
+
+  D3D12_CPU_DESCRIPTOR_HANDLE uavDescriptorHandle;
+  uintRandTextHeapIndex = allocateDescriptor(rtHeap, &uavDescriptorHandle, uintRandTextHeapIndex);
+
+  D3D12_UNORDERED_ACCESS_VIEW_DESC UAVDesc = {};
+  UAVDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+  device->CreateUnorderedAccessView(uintRandText, nullptr, &UAVDesc, uavDescriptorHandle);
+  uintRandTextDescriptor = CD3DX12_GPU_DESCRIPTOR_HANDLE(rtHeap.handle->GetGPUDescriptorHandleForHeapStart(), uintRandTextHeapIndex, rtHeap.hardwareSize);
+  //fallback.outputResourceDescriptors.cpuDescriptorHandle = uavDescriptorHandle;
 }
 
 void DX12Render::initializeScene() {
@@ -2597,6 +2637,61 @@ void DX12Render::initializeScene() {
     sceneConstantBufferPtr->reflectance = 0.3f;
     sceneConstantBufferPtr->elapsedTime = 0.0f;
   }
+}
+
+void DX12Render::createRandomUintTexture(const uint32_t &width, const uint32_t &height, ID3D12Resource** upload, D3D12_PLACED_SUBRESOURCE_FOOTPRINT* footprint) {
+  HRESULT hr;
+  const auto uploadHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+
+  const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_UINT, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+  hr = device->CreateCommittedResource(
+    &uploadHeapProperties,
+    D3D12_HEAP_FLAG_NONE,
+    &desc,
+    D3D12_RESOURCE_STATE_COPY_DEST,
+    nullptr,
+    IID_PPV_ARGS(&uintRandText)
+  );
+  throwIfFailed(hr, "Could not create random texture");
+
+  uintRandText->SetName(L"Random texture");
+
+  //D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+  uint32_t numRows;
+  uint64_t rowSize;
+  uint64_t totalBytes;
+  device->GetCopyableFootprints(&desc, 0, 1, 0, footprint, &numRows, &rowSize, &totalBytes);
+
+  hr = device->CreateCommittedResource(
+    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+    D3D12_HEAP_FLAG_NONE,
+    &CD3DX12_RESOURCE_DESC::Buffer(totalBytes),
+    D3D12_RESOURCE_STATE_GENERIC_READ,
+    nullptr,
+    IID_PPV_ARGS(upload)
+  );
+  throwIfFailed(hr, "Could not create upload buffer");
+
+  uint8_t* buffer = nullptr;
+  (*upload)->Map(0, nullptr, reinterpret_cast<void**>(&buffer));
+
+  std::random_device rd;  //Will be used to obtain a seed for the random number engine
+  std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
+
+  //uint32_t abc = gen();
+
+  for (uint32_t y = 0; y < numRows; ++y) {
+    uint32_t* rowData = reinterpret_cast<uint32_t*>(buffer + footprint->Offset + y * footprint->Footprint.RowPitch);
+    for (uint32_t j = 0; j < rowSize / sizeof(uint32_t); ++j) {
+      // и тип сюда нужно пихать данные? выглядит относительно логично
+      // непонятно только чем отличается Footprint.RowPitch от rowSize
+      // в японском блоге отыскал что это похожие вещи (если не одно и тоже значение)
+
+      rowData[j] = gen();
+    }
+  }
+
+  // и все по идее, не забыть только удалить аплоад буфер
 }
 
 void DX12Render::createFilterResources(const uint32_t &width, const uint32_t &height) {

@@ -25,6 +25,8 @@ Texture2D<float4> colors : register(t3);
 Texture2D<float4> normals : register(t4);
 Texture2D<float> depths : register(t5);
 
+RWTexture2D<uint> randomTexture : register(u1);
+
 typedef BuiltInTriangleIntersectionAttributes MyAttributes;
 //struct RayPayload {
 //  float4 color;
@@ -188,6 +190,35 @@ float3 permute(float3 x) {
   return mod289(((x*34.0) + 1.0)*x);
 }
 
+// glibc
+static const uint multiplier = 1103515245;
+static const uint increment = 12345;
+static const uint modulus = 1 << 31;
+
+uint LCG() {
+  const uint2 coord = uint2(DispatchRaysIndex().x, DispatchRaysIndex().y);
+  const uint num = randomTexture[coord];
+  const uint nextNum = (multiplier * num + increment) % modulus;
+  randomTexture[coord] = nextNum;
+
+  return nextNum;
+}
+
+float randomFloat02() {
+  return (LCG() & 0xFFFFFF) / 16777216.0f;
+}
+
+float3 randomInUnitSphere() {
+  const float z = randomFloat02() * 2.0f - 1.0f;
+  const float t = randomFloat02() * 2.0f * 3.1415926f;
+  const float r = sqrt(max(0.0, 1.0f - z * z));
+  const float x = r * cos(t);
+  const float y = r * sin(t);
+  float3 res = float3(x, y, z);
+  res *= pow(randomFloat02(), 1.0 / 3.0);
+  return res;
+}
+
 uint RNG(inout uint state) {
   uint x = state;
   x ^= x << 13;
@@ -263,9 +294,21 @@ float3 randPosOnLightSphere(const float2 k, const float seed) {
   // (add some magic numbers to generate three seeds to decrease correlation
   // between velocity coordinates)
 
+  /*const float seed2 = asfloat(uint(seed));
+  const float2 newTC = tc * seed2;
+  const float r = random(newTC);*/
+
   const uint2 DTid = uint2(DispatchRaysIndex().x, DispatchRaysIndex().y);
   //const uint rngState = (DTid.x * 1973 + DTid.y * 9277 + asuint(seed) * 26699) | 1;
   const uint rngState = (DTid.x * 1973 + DTid.y * 9277 + uint(seed) * 26699) | 1;
+
+  // нужно поменять рандом, сделать его на основе uint текстуры
+  // то есть сгенерить текстуру с рандомными uint'ами
+  // чтобы убрать патерн у случайных чисел
+  // + нужно нарисовать источник света
+  // + нужно сделать какой нибудь фильтр (билатеральный)
+  // фильтр должен работать и без темпоральной аккумуляции
+  // нужно понимать че и как работает
 
   float3 velocity;
   /*velocity.x = cnoise(float3(tc.x, tc.y, skewed_seed.x));
@@ -275,7 +318,8 @@ float3 randPosOnLightSphere(const float2 k, const float seed) {
   // (permutate arguments to decrease correlation even more)
 
   //velocity = randomInUnitSphere(asuint(a));
-  velocity = randomInUnitSphere(rngState);
+  //velocity = randomInUnitSphere(rngState);
+  velocity = randomInUnitSphere();
 
   velocity = normalize(velocity);
   // normalize

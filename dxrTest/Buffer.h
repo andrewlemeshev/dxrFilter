@@ -10,7 +10,7 @@
 //#include <DirectXMath.h>
 #include "d3dx12.h"
 
-// нужно ли мне от него наследовать?
+// нужно ли мне от него наследовать?  
 template <typename T>
 class GPUBuffer {
 public:

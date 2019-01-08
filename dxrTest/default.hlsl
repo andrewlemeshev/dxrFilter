@@ -34,10 +34,12 @@ VS_OUTPUT vertexMain(VS_INPUT input) {
   output.pos = mul(mat, input.pos);
   //output.pos = mul(input.pos, vpMat);
   //output.color = float4(abs(input.normal.x), abs(input.normal.y), abs(input.normal.z), 1.0f);
-  output.color = float4(input.normal.x < 0.0f ? 0.5f*abs(input.normal.x) : input.normal.x, 
+  /*output.color = float4(input.normal.x < 0.0f ? 0.5f*abs(input.normal.x) : input.normal.x, 
                         input.normal.y < 0.0f ? 0.5f*abs(input.normal.y) : input.normal.y,
                         input.normal.z < 0.0f ? 0.5f*abs(input.normal.z) : input.normal.z,
-                        1.0f);
+                        1.0f);*/
+
+  output.color = float4(0.8f, 0.8f, 0.8f, 1.0f);
   //output.normal = mul(input.model, input.normal);
   output.normal = input.normal;
 

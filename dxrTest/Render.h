@@ -145,6 +145,7 @@ enum class GlobalRootSignatureParams : uint32_t {
   GBUFFER_TEXTURES,
   SCENE_CONSTANT,
   VERTEX_BUFFERS,
+  RANDOM_TEXTURE,
   COUNT
 };
 
@@ -268,6 +269,10 @@ private:
   uint32_t rtDescriptorsAllocated;
   uint32_t rtDescriptorSize;*/
 
+  ID3D12Resource* uintRandText = nullptr;
+  D3D12_GPU_DESCRIPTOR_HANDLE uintRandTextDescriptor;
+  uint32_t uintRandTextHeapIndex;
+
   DescriptorHeap rtHeap;
 
   //DXGI_FORMAT filterOutputFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -294,6 +299,8 @@ private:
   void createRaytracingOutputResource(const uint32_t &width, const uint32_t &height);
   void createDescriptors();
   void initializeScene();
+
+  void createRandomUintTexture(const uint32_t &width, const uint32_t &height, ID3D12Resource** upload, D3D12_PLACED_SUBRESOURCE_FOOTPRINT* footprint);
 
   void createFilterResources(const uint32_t &width, const uint32_t &height);
   void createFilterDescriptorHeap();

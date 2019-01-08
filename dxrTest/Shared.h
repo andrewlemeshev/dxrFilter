@@ -65,6 +65,7 @@ struct SceneConstantBuffer {
   float4   lightDiffuseColor;
   float    reflectance;
   float    elapsedTime;                 // Elapsed application time.
+  
 };
 
 struct ModelData {
