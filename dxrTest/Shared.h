@@ -55,6 +55,7 @@ struct RayPayload {
 
 struct ShadowRayPayload {
   bool hit;
+  float hitDist;
 };
 
 struct SceneConstantBuffer {
@@ -63,9 +64,9 @@ struct SceneConstantBuffer {
   float4   lightPosition;
   float4   lightAmbientColor;
   float4   lightDiffuseColor;
+  float    lightRadius;
   float    reflectance;
   float    elapsedTime;                 // Elapsed application time.
-  
 };
 
 struct ModelData {

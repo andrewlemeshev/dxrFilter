@@ -26,10 +26,12 @@ Texture2D<float4> normals : register(t4);
 Texture2D<float> depths : register(t5);
 
 RWTexture2D<uint> randomTexture : register(u1);
+RWTexture2D<float2> shadowTarget : register(u2);
 
 typedef BuiltInTriangleIntersectionAttributes MyAttributes;
+
 //struct RayPayload {
-//  float4 color;
+//  float hitDist;
 //};
 
 struct Ray {
@@ -141,7 +143,7 @@ float4 traceRadianceRay(const Ray ray, const uint currentRayRecursionDepth) {
   return rayPayload.color;
 }
 
-bool traceShadowRay(const Ray ray, const uint currentRayRecursionDepth) {
+bool traceShadowRay(const Ray ray, const uint currentRayRecursionDepth, inout ShadowRayPayload load) {
   if (currentRayRecursionDepth >= MAX_RAY_RECURSION_DEPTH) {
     return false;
   }
@@ -158,20 +160,20 @@ bool traceShadowRay(const Ray ray, const uint currentRayRecursionDepth) {
   // Initialize shadow ray payload.
   // Set the initial value to true since closest and any hit shaders are skipped. 
   // Shadow miss shader, if called, will set it to false.
-  ShadowRayPayload shadowPayload = {true};
+  //ShadowRayPayload shadowPayload = {true, 0.0f};
 
   TraceRay(globalScene,
     RAY_FLAG_CULL_BACK_FACING_TRIANGLES
-    | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-    | RAY_FLAG_FORCE_OPAQUE             // ~skip any hit shaders
-    | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, // ~skip closest hit shaders,
+    //| RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+    | RAY_FLAG_FORCE_OPAQUE,             // ~skip any hit shaders
+    //| RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, // ~skip closest hit shaders,
     ~0, // any instances
     1, // hit group offset
     0, // geometry stride (почему 2??)
     1, // miss shader offset
-    rayDesc, shadowPayload);
+    rayDesc, load);
 
-  return shadowPayload.hit;
+  return load.hit;
 }
 
 float random(float2 p) {
@@ -248,7 +250,7 @@ float3 randPosOnLightSphere(const float2 k, const float seed) {
   //const float camPosX = constantBuffer.cameraPosition.x == 0.0f ? 1.0f : constantBuffer.cameraPosition.x;
   //const float camPosZ = constantBuffer.cameraPosition.z == 0.0f ? 1.0f : constantBuffer.cameraPosition.z;
   const float3 lightPos = constantBuffer.lightPosition.xyz;
-  const float radius = 5.0f;
+  const float radius = constantBuffer.lightRadius;
 
   //const float2 p = float2(camPosX + 1.0f, camPosZ + 1.0f);
 
@@ -285,11 +287,11 @@ float3 randPosOnLightSphere(const float2 k, const float seed) {
 
   //return lightPos + sign * rand * radius;
 
-  const float2 tc = k.xy * magic.xy;
+  //const float2 tc = k.xy * magic.xy;
   // scale texture coordinates
 
-  const float a = seed * magic.z + tc.y - tc.x;
-  const float3 skewed_seed = float3(a, a, a) + magic.yzw;
+  //const float a = seed * magic.z + tc.y - tc.x;
+  //const float3 skewed_seed = float3(a, a, a) + magic.yzw;
   // scale and skew seed a bit to decrease noise correlation accross pixels
   // (add some magic numbers to generate three seeds to decrease correlation
   // between velocity coordinates)
@@ -298,9 +300,9 @@ float3 randPosOnLightSphere(const float2 k, const float seed) {
   const float2 newTC = tc * seed2;
   const float r = random(newTC);*/
 
-  const uint2 DTid = uint2(DispatchRaysIndex().x, DispatchRaysIndex().y);
+  //const uint2 DTid = uint2(DispatchRaysIndex().x, DispatchRaysIndex().y);
   //const uint rngState = (DTid.x * 1973 + DTid.y * 9277 + asuint(seed) * 26699) | 1;
-  const uint rngState = (DTid.x * 1973 + DTid.y * 9277 + uint(seed) * 26699) | 1;
+  //const uint rngState = (DTid.x * 1973 + DTid.y * 9277 + uint(seed) * 26699) | 1;
 
   // нужно поменять рандом, сделать его на основе uint текстуры
   // то есть сгенерить текстуру с рандомными uint'ами
@@ -369,7 +371,8 @@ void rayGen() {
   // Trace a shadow ray.
   //constantBuffer.lightPosition.xyz
   Ray shadowRay = {pos.xyz, normalize(rndPos - pos.xyz)};
-  bool shadowRayHit = traceShadowRay(shadowRay, currentRecursionDepth);
+  ShadowRayPayload load = {true, 0.0f};
+  bool shadowRayHit = traceShadowRay(shadowRay, currentRecursionDepth, load);
 
   // лучи нужно кидать на рандомную точку 
   // радиус
@@ -396,6 +399,16 @@ void rayGen() {
   color = lerp(color, backgroundColor, 1.0 - exp(-0.000002*t*t*t));
 
   RenderTarget[DTid] = color;
+  shadowTarget[DTid] = float2(float(shadowRayHit), load.hitDist);
+
+  // как верно передать тень в другую текстуру?
+  // мне при этом нужно вычислить свет на сцене
+  // или потом это сделать?
+
+  // ну собственно нужно вычислить здесь точку где есть тень, 
+  // передать туда rayHitDist, и затем далее вычислить свет
+  // следовательно здесь нужно просто получить дистанцию
+  // затем запустить шейдер со светом и использовать скринспейс тень
 }
 
 // closest hit shaders
@@ -456,7 +469,8 @@ void closestHitTriangle(inout RayPayload rayPayload, in BuiltInTriangleIntersect
   // Trace a shadow ray.
   float3 hitPosition = HitWorldPosition();
   Ray shadowRay = {hitPosition, normalize(constantBuffer.lightPosition.xyz - hitPosition)};
-  bool shadowRayHit = traceShadowRay(shadowRay, rayPayload.recursionDepth);
+  ShadowRayPayload load = {true, 0.0f};
+  bool shadowRayHit = traceShadowRay(shadowRay, rayPayload.recursionDepth, load);
 
   // дальше мы считаем цвет
   // где то здесь же мы считаем отражение
@@ -484,17 +498,24 @@ void closestHitTriangle(inout RayPayload rayPayload, in BuiltInTriangleIntersect
   rayPayload.color = color;
 }
 
+[shader("closesthit")]
+void shadowClosestHitTriangle(inout ShadowRayPayload payload, in BuiltInTriangleIntersectionAttributes attr) {
+  payload.hit = true;
+  payload.hitDist = RayTCurrent();
+}
+
 // miss shaders
 
 [shader("miss")]
 void missRadiance(inout RayPayload payload) {
-  float4 color = float4(backgroundColor);
+  const float4 color = float4(backgroundColor);
   payload.color = color;
 }
 
 [shader("miss")]
 void missShadow(inout ShadowRayPayload payload) {
   payload.hit = false;
+  payload.hitDist = 0.0f;
 }
 
 // intersection shaders

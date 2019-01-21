@@ -70,6 +70,12 @@
     <FxCompile Include="toneMapping.hlsl">
       <Filter>Resource Files</Filter>
     </FxCompile>
+    <FxCompile Include="bilateral.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+    <FxCompile Include="computeLightning.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

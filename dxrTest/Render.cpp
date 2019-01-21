@@ -34,8 +34,14 @@ const wchar_t* missShaderName = L"MyMissShader";
 const wchar_t* hitGroupNames2[] = {
     L"triangleHitGroup", L"shadowrayTriangleHitGroup"
 };
+
 const wchar_t* raygenShaderName2 = L"rayGen";
-const wchar_t* closestHitShaderName2 = L"closestHitTriangle";
+
+const wchar_t* closestHitShaderName2[] = {
+  L"closestHitTriangle",
+  L"shadowClosestHitTriangle"
+};
+
 const wchar_t* missShaderNames2[] = {
   L"missRadiance",
   L"missShadow"
@@ -172,8 +178,6 @@ bool getHardwareAdapter(IDXGIFactory4 *factory, IDXGIAdapter1 **adapter) {
 }
 
 DX12Render::DX12Render() {
-  fallback.forceComputeFallback = false;
-  fallback.raytracingOutputResourceUAVDescriptorHeapIndex = UINT32_MAX;
   rayGenCB.viewport = {-1.0f, -1.0f, 1.0f, 1.0f};
   planeMaterialCB.albedo = glm::vec4(0.9f, 0.9f, 0.9f, 1.0f);
   planeMaterialCB.reflectanceCoef = 0.25f;
@@ -184,16 +188,28 @@ DX12Render::DX12Render() {
 
   oldViewProj = glm::mat4(1.0f);
 
+  fallback.forceComputeFallback = false;
+  fallback.raytracingOutputResourceUAVDescriptorHeapIndex = UINT32_MAX;
+  fallback.shadowHeapIndex = UINT32_MAX;
+
   fallback.colorBufferHeapIndex = UINT32_MAX;
   fallback.depthBufferHeapIndex = UINT32_MAX;
   fallback.normalBufferHeapIndex = UINT32_MAX;
 
   filter.filterOutputUAVDescIndex = UINT32_MAX;
+  filter.bilateralOutputUAVDescIndex = UINT32_MAX;
+  filter.bilateralInputUAVDescIndex = UINT32_MAX;
 
   filter.colorBufferHeapIndex = UINT32_MAX;
   filter.depthBufferHeapIndex = UINT32_MAX;
   filter.lastFrameColorHeapIndex = UINT32_MAX;
   filter.lastFrameDepthHeapIndex = UINT32_MAX;
+
+  lightning.outputHeapIndex = UINT32_MAX;
+  lightning.shadowHeapIndex = UINT32_MAX;
+  lightning.colorHeapIndex = UINT32_MAX; 
+  lightning.normalHeapIndex = UINT32_MAX; 
+  lightning.depthHeapIndex = UINT32_MAX;
 
   toneMapping.outputUAVDescIndex = UINT32_MAX;
   toneMapping.filterDescIndex = UINT32_MAX;
@@ -766,6 +782,7 @@ void DX12Render::initRT(const uint32_t &width, const uint32_t &height, const GPU
 
   // Create an output 2D texture to store the raytracing result to.
   createRaytracingOutputResource(width, height);
+  createShadowOutputResource(width, height);
 }
 
 void DX12Render::initFilter(const uint32_t &width, const uint32_t &height) {
@@ -1109,7 +1126,8 @@ void DX12Render::prepareRender(const uint32_t &instanceCount, const glm::mat4 &v
 
   // в первый раз когда мы сюда заходим этого буфера еще нет
   if (sceneConstantBufferPtr != nullptr) {
-    const glm::mat4 lightPos = glm::translate(glm::mat4(1.0f), glm::vec3(sceneConstantBufferPtr->lightPosition));
+    glm::mat4 lightPos = glm::translate(glm::mat4(1.0f), glm::vec3(sceneConstantBufferPtr->lightPosition));
+    lightPos = glm::scale(lightPos, glm::vec3(sceneConstantBufferPtr->lightRadius, sceneConstantBufferPtr->lightRadius, sceneConstantBufferPtr->lightRadius));
     memcpy(&instanceBufferPtr[1], &lightPos, sizeof(glm::mat4));
   }
   /*for (uint32_t i = 0; i < realInstanceCount; ++i) {
@@ -1359,6 +1377,7 @@ void DX12Render::rayTracingPart() {
   commandList->SetComputeRootConstantBufferView(static_cast<uint32_t>(GlobalRootSignatureParams::SCENE_CONSTANT), fallback.sceneConstantBuffer->GetGPUVirtualAddress());
   commandList->SetComputeRootDescriptorTable(static_cast<uint32_t>(GlobalRootSignatureParams::VERTEX_BUFFERS), fallback.indexDescs.gpuDescriptorHandle);
   commandList->SetComputeRootDescriptorTable(static_cast<uint32_t>(GlobalRootSignatureParams::RANDOM_TEXTURE), uintRandTextDescriptor);
+  commandList->SetComputeRootDescriptorTable(static_cast<uint32_t>(GlobalRootSignatureParams::SHADOW_TEXTURE), fallback.shadowDescriptors.gpuDescriptorHandle);
 
   //D3D12_DISPATCH_RAYS_DESC dispatchDesc = {};
   /*fallback.commandList->SetDescriptorHeaps(1, &rtHeap);
@@ -1449,6 +1468,47 @@ void DX12Render::filterPart() {
     commandList->ResourceBarrier(_countof(barriers), barriers);
   }
 
+  commandList->SetComputeRootSignature(filter.bilateralRootSignature);
+
+  commandList->SetDescriptorHeaps(1, &filter.heap.handle);
+
+  commandList->SetComputeRootDescriptorTable(0, filter.bilateralOutputUAVDesc);
+  commandList->SetComputeRootDescriptorTable(1, filter.bilateralInputUAVDesc);
+
+  commandList->SetPipelineState(filter.bilateralPSO);
+
+  commandList->Dispatch(1280, 720, 1);
+
+  {
+    const D3D12_RESOURCE_BARRIER barriers[] = {
+      CD3DX12_RESOURCE_BARRIER::UAV(filter.bilateralOutput),
+      CD3DX12_RESOURCE_BARRIER::Transition(filter.bilateralOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ)
+    };
+
+    commandList->ResourceBarrier(_countof(barriers), barriers);
+  }
+
+  commandList->SetComputeRootSignature(lightning.rootSignature);
+
+  commandList->SetDescriptorHeaps(1, &lightning.heap.handle);
+
+  commandList->SetComputeRootDescriptorTable(0, lightning.outputDescriptor);
+  commandList->SetComputeRootDescriptorTable(1, lightning.shadowDescriptor);
+  commandList->SetComputeRootConstantBufferView(2, fallback.sceneConstantBuffer->GetGPUVirtualAddress());
+
+  commandList->SetPipelineState(lightning.pso);
+
+  commandList->Dispatch(dispatchX, dispatchY, 1);
+
+  {
+    const D3D12_RESOURCE_BARRIER barriers[] = {
+      CD3DX12_RESOURCE_BARRIER::UAV(lightning.output),
+      CD3DX12_RESOURCE_BARRIER::Transition(lightning.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ)
+    };
+
+    commandList->ResourceBarrier(_countof(barriers), barriers);
+  }
+
   commandList->SetComputeRootSignature(toneMapping.rootSignature);
 
   commandList->SetDescriptorHeaps(1, &toneMapping.heap.handle);
@@ -1467,7 +1527,7 @@ void DX12Render::filterPart() {
       CD3DX12_RESOURCE_BARRIER::Transition(filter.colorLast, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.depthLast, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST),
       CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.depth, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_SOURCE),
-      CD3DX12_RESOURCE_BARRIER::Transition(toneMapping.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
+      CD3DX12_RESOURCE_BARRIER::Transition(toneMapping.output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE)
     };
 
     commandList->ResourceBarrier(_countof(barriers), barriers);
@@ -1490,7 +1550,9 @@ void DX12Render::filterPart() {
       CD3DX12_RESOURCE_BARRIER::Transition(filter.colorLast, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.depthLast, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
       CD3DX12_RESOURCE_BARRIER::Transition(fallback.raytracingOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-      CD3DX12_RESOURCE_BARRIER::Transition(toneMapping.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+      CD3DX12_RESOURCE_BARRIER::Transition(toneMapping.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+      CD3DX12_RESOURCE_BARRIER::Transition(filter.bilateralOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+      CD3DX12_RESOURCE_BARRIER::Transition(lightning.output, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     };
 
     commandList->ResourceBarrier(_countof(barriers), barriers);
@@ -1881,11 +1943,12 @@ void DX12Render::createRootSignatures() {
 
     serializeRootSignature(globalRootSignatureDesc, &fallback.globalRootSignature);*/
 
-    CD3DX12_DESCRIPTOR_RANGE ranges[4];
+    CD3DX12_DESCRIPTOR_RANGE ranges[5];
     ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
     ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 1);
     ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 3);
     ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 1);
+    ranges[4].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 2);
 
     CD3DX12_ROOT_PARAMETER rootParameters[static_cast<uint32_t>(GlobalRootSignatureParams::COUNT)];
     rootParameters[static_cast<uint32_t>(GlobalRootSignatureParams::OUTPUT_VIEW_SLOT)].InitAsDescriptorTable(1, &ranges[0]);
@@ -1894,6 +1957,7 @@ void DX12Render::createRootSignatures() {
     rootParameters[static_cast<uint32_t>(GlobalRootSignatureParams::SCENE_CONSTANT)].InitAsConstantBufferView(0);
     rootParameters[static_cast<uint32_t>(GlobalRootSignatureParams::VERTEX_BUFFERS)].InitAsDescriptorTable(1, &ranges[1]);
     rootParameters[static_cast<uint32_t>(GlobalRootSignatureParams::RANDOM_TEXTURE)].InitAsDescriptorTable(1, &ranges[3]);
+    rootParameters[static_cast<uint32_t>(GlobalRootSignatureParams::SHADOW_TEXTURE)].InitAsDescriptorTable(1, &ranges[4]);
 
     CD3DX12_ROOT_SIGNATURE_DESC globalRootSignatureDesc(ARRAYSIZE(rootParameters), rootParameters);
 
@@ -1997,9 +2061,9 @@ void DX12Render::createRaytracingPSO() {
   // скорее всего мне нужно задать только треугольную геометрию
   for (uint32_t i = 0; i < raysTypeCount; ++i) {
     auto hitGroup = raytracingPipeline.CreateSubobject<CD3D12_HIT_GROUP_SUBOBJECT>();
-    if (i == 0) {
-      hitGroup->SetClosestHitShaderImport(closestHitShaderName2);
-    }
+    //if (i == 0) {
+      hitGroup->SetClosestHitShaderImport(closestHitShaderName2[i]);
+    //}
 
     hitGroup->SetHitGroupExport(hitGroupNames2[i]);
     hitGroup->SetHitGroupType(D3D12_HIT_GROUP_TYPE_TRIANGLES);
@@ -2063,7 +2127,7 @@ void DX12Render::createRTDescriptorHeap() {
   const uint32_t topStructCount = 1;                   // top level acceleration struct
   const uint32_t rtBuffers = 2;                        // const buffer, material
   const uint32_t indexVertexBuffers = 2;               // index and vertex buffers
-  const uint32_t rtTextures = 4;                       // output, color, normal, depth
+  const uint32_t rtTextures = 5;                       // output, shadows, color, normal, depth
   const uint32_t randomTexture = 1;                    // random texture buffer for number generation
   const uint32_t descriptorsCount = bottomStructCount + topStructCount + rtBuffers + indexVertexBuffers + rtTextures + randomTexture;
 
@@ -2440,6 +2504,7 @@ void DX12Render::buildShaderTables() {
     memcpy(copyDest + shaderIdentifierSize2, &rootArg, sizeof(rootArg));
   }
 
+  // miss
   {
     const uint32_t numShaderRecords = raysTypeCount;
     const uint32_t shaderRecordSize = shaderIdentifierSize2; // No root arguments
@@ -2457,6 +2522,7 @@ void DX12Render::buildShaderTables() {
     }
   }
 
+  // hit group 
   {
     struct RootArguments {
       PrimitiveConstantBuffer materialCb;
@@ -2550,8 +2616,6 @@ void DX12Render::buildShaderTables() {
 
 void DX12Render::createRaytracingOutputResource(const uint32_t &width, const uint32_t &height) {
   HRESULT hr;
-  //const DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM;
-  //const DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
   // Create the output resource. The dimensions and format should match the swap-chain.
   auto uavDesc = CD3DX12_RESOURCE_DESC::Tex2D(rayTracingOutputFormat, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -2577,6 +2641,35 @@ void DX12Render::createRaytracingOutputResource(const uint32_t &width, const uin
   device->CreateUnorderedAccessView(fallback.raytracingOutput, nullptr, &UAVDesc, uavDescriptorHandle);
   fallback.outputResourceDescriptors.gpuDescriptorHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(rtHeap.handle->GetGPUDescriptorHandleForHeapStart(), fallback.raytracingOutputResourceUAVDescriptorHeapIndex, rtHeap.hardwareSize);
   fallback.outputResourceDescriptors.cpuDescriptorHandle = uavDescriptorHandle;
+}
+
+void DX12Render::createShadowOutputResource(const uint32_t &width, const uint32_t &height) {
+  HRESULT hr;
+
+  // Create the output resource. The dimensions and format should match the swap-chain.
+  auto uavDesc = CD3DX12_RESOURCE_DESC::Tex2D(shadowOutputFormat, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+  auto defaultHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+  hr = device->CreateCommittedResource(
+    &defaultHeapProperties,
+    D3D12_HEAP_FLAG_NONE,
+    &uavDesc,
+    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+    nullptr,
+    IID_PPV_ARGS(&fallback.shadowOutput)
+  );
+  throwIfFailed(hr, "Could not create raytracing output resource");
+
+  fallback.shadowOutput->SetName(L"Raytracing shadows output resource");
+
+  D3D12_CPU_DESCRIPTOR_HANDLE uavDescriptorHandle;
+  fallback.shadowHeapIndex = allocateDescriptor(rtHeap, &uavDescriptorHandle, fallback.shadowHeapIndex);
+
+  D3D12_UNORDERED_ACCESS_VIEW_DESC UAVDesc = {};
+  UAVDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+  device->CreateUnorderedAccessView(fallback.shadowOutput, nullptr, &UAVDesc, uavDescriptorHandle);
+  fallback.shadowDescriptors.gpuDescriptorHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(rtHeap.handle->GetGPUDescriptorHandleForHeapStart(), fallback.shadowHeapIndex, rtHeap.hardwareSize);
+  fallback.shadowDescriptors.cpuDescriptorHandle = uavDescriptorHandle;
 }
 
 void DX12Render::createDescriptors() {
@@ -2634,6 +2727,7 @@ void DX12Render::initializeScene() {
     float d = 0.6f;
     sceneConstantBufferPtr->lightDiffuseColor = glm::vec4(d, d, d, 1.0f);
     sceneConstantBufferPtr->lightPosition = glm::vec4(0.0f, -18.0f, -20.0f, 0.0f);
+    sceneConstantBufferPtr->lightRadius = 5.0f;
     sceneConstantBufferPtr->reflectance = 0.3f;
     sceneConstantBufferPtr->elapsedTime = 0.0f;
   }
@@ -2696,14 +2790,16 @@ void DX12Render::createRandomUintTexture(const uint32_t &width, const uint32_t &
 
 void DX12Render::createFilterResources(const uint32_t &width, const uint32_t &height) {
   createFilterDescriptorHeap();
-
   createFilterOutputTexture(width, height);
-
   createFilterLastFrameData(width, height);
-
   createFilterConstantBuffer();
-
   createFilterPSO();
+
+  createBilateralOutputTexture(width, height);
+  createBilateralConstantBuffer();
+  createBilateralPSO();
+
+  createLightningResources(width, height);
 
   createToneMappingResources(width, height);
 }
@@ -2711,24 +2807,12 @@ void DX12Render::createFilterResources(const uint32_t &width, const uint32_t &he
 void DX12Render::createFilterDescriptorHeap() {
   HRESULT hr;
 
-  // возможно здесь все же придется еще раз создать дескрипторы для основных текстурок
   const uint32_t filterBuffers = 1;                        // const buffer
   const uint32_t filterTextures = 1+2+2;                   // output, color, depth, last color, last depth
-  const uint32_t descriptorsCount = filterBuffers + filterTextures;
+  const uint32_t bilateralFilter = 3;                      // output, color, normal
+  const uint32_t descriptorsCount = filterBuffers + filterTextures + bilateralFilter;
 
-  const D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {
-    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-    descriptorsCount, // ?
-    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-    0
-  };
-
-  hr = device->CreateDescriptorHeap(&descriptorHeapDesc, IID_PPV_ARGS(&filter.heap.handle));
-  throwIfFailed(hr, "Could not create descriptor heap for filter");
-  filter.heap.handle->SetName(L"descriptor heap for filter");
-
-  filter.heap.hardwareSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  filter.heap.allocatedCount = 0;
+  createDescriptorHeap(descriptorsCount, filter.heap);
 }
 
 void DX12Render::createFilterOutputTexture(const uint32_t &width, const uint32_t &height) {
@@ -2957,6 +3041,109 @@ void DX12Render::createFilterPSO() {
   //SAFE_RELEASE(errorBuff)
 }
 
+void DX12Render::createBilateralOutputTexture(const uint32_t &width, const uint32_t &height) {
+  const TextureUAVCreateInfo info{
+    bilateralOutputFormat,
+    width,
+    height,
+    &filter.heap,
+    &filter.bilateralOutput,
+    &filter.bilateralOutputUAVDesc,
+    &filter.bilateralOutputUAVDescIndex
+  };
+  createUAVTexture(info);
+  filter.bilateralOutput->SetName(L"Bilateral output resource");
+
+  //createTextureSRV(filter.heap, filter.filterOutput, filterOutputFormat, filter.bilateralInputUAVDescIndex, filter.bilateralInputUAVDesc);
+  createTextureSRV(filter.heap, fallback.shadowOutput, shadowOutputFormat, filter.bilateralInputUAVDescIndex, filter.bilateralInputUAVDesc);
+  createTextureSRV(filter.heap, gBuffer.normal, normalBufferFormat, filter.bilateralNormalHeapIndex, filter.bilateralNormalDesc);
+}
+
+void DX12Render::createBilateralConstantBuffer() {
+
+}
+
+void DX12Render::createBilateralPSO() {
+  HRESULT hr;
+
+  CD3DX12_DESCRIPTOR_RANGE ranges[2];
+  ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+  ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
+
+  CD3DX12_ROOT_PARAMETER rootParameters[2];
+  rootParameters[0].InitAsDescriptorTable(1, &ranges[0]);
+  rootParameters[1].InitAsDescriptorTable(1, &ranges[1]);
+
+  const CPCreateInfo info{
+    L"bilateral.hlsl",
+    _countof(rootParameters),
+    rootParameters,
+    &filter.bilateralRootSignature,
+    &filter.bilateralPSO
+  };
+  createComputeShader(info);
+}
+
+void DX12Render::createLightningResources(const uint32_t &width, const uint32_t &height) {
+  createLightningDescriptorHeap();
+  createLightningOutputTexture(width, height);
+  createLightningConstantBuffer();
+  createLightningPSO();
+}
+
+void DX12Render::createLightningDescriptorHeap() {
+  // возможно здесь все же придется еще раз создать дескрипторы для основных текстурок
+  const uint32_t filterBuffers = 1;                        // const buffer
+  const uint32_t filterTextures = 1 + 1 + 1 + 1 + 1;       // output, color, depth, normal, shadow
+  const uint32_t descriptorsCount = filterBuffers + filterTextures;
+
+  createDescriptorHeap(descriptorsCount, lightning.heap);
+}
+
+void DX12Render::createLightningOutputTexture(const uint32_t &width, const uint32_t &height) {
+  const TextureUAVCreateInfo info{
+    lightningOutputFormat,
+    width,
+    height,
+    &lightning.heap,
+    &lightning.output,
+    &lightning.outputDescriptor,
+    &lightning.outputHeapIndex
+  };
+  createUAVTexture(info);
+  lightning.output->SetName(L"Lightning output resource");
+
+  createTextureSRV(lightning.heap, filter.bilateralOutput, bilateralOutputFormat,  lightning.shadowHeapIndex, lightning.shadowDescriptor);
+  createTextureSRV(lightning.heap, gBuffer.color,  DXGI_FORMAT_R8G8B8A8_UNORM,     lightning.colorHeapIndex,  lightning.colorDescriptor);
+  createTextureSRV(lightning.heap, gBuffer.normal, DXGI_FORMAT_R32G32B32A32_FLOAT, lightning.normalHeapIndex, lightning.normalDescriptor);
+  createTextureSRV(lightning.heap, gBuffer.depth,  DXGI_FORMAT_R32_FLOAT,          lightning.depthHeapIndex,  lightning.depthDescriptor);
+}
+
+void DX12Render::createLightningConstantBuffer() {
+
+}
+
+void DX12Render::createLightningPSO() {
+  CD3DX12_DESCRIPTOR_RANGE ranges[2];
+  ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+  ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0);
+
+  // тут по идее можно по другому раскидать
+  CD3DX12_ROOT_PARAMETER rootParameters[3];
+  rootParameters[0].InitAsDescriptorTable(1, &ranges[0]);
+  rootParameters[1].InitAsDescriptorTable(1, &ranges[1]);
+  rootParameters[2].InitAsConstantBufferView(0, 0);
+
+  const CPCreateInfo info{
+    L"computeLightning.hlsl",
+    3,
+    rootParameters,
+    &lightning.rootSignature,
+    &lightning.pso
+  };
+  createComputeShader(info);
+}
+
 void DX12Render::createToneMappingResources(const uint32_t &width, const uint32_t &height) {
   createToneMappingDescriptorHeap();
 
@@ -2968,55 +3155,28 @@ void DX12Render::createToneMappingResources(const uint32_t &width, const uint32_
 void DX12Render::createToneMappingDescriptorHeap() {
   HRESULT hr;
 
-  // возможно здесь все же придется еще раз создать дескрипторы для основных текстурок
   const uint32_t filterTextures = 1 + 1;                     // output, color
   const uint32_t descriptorsCount = filterTextures;
 
-  const D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {
-    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-    descriptorsCount,
-    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-    0
-  };
-
-  hr = device->CreateDescriptorHeap(&descriptorHeapDesc, IID_PPV_ARGS(&toneMapping.heap.handle));
-  throwIfFailed(hr, "Could not create descriptor heap for filter");
-  toneMapping.heap.handle->SetName(L"descriptor heap for filter");
-
-  toneMapping.heap.hardwareSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  toneMapping.heap.allocatedCount = 0;
+  createDescriptorHeap(descriptorsCount, toneMapping.heap);
 }
 
 void DX12Render::createToneMappingOutputTexture(const uint32_t &width, const uint32_t &height) {
-  HRESULT hr;
+  const TextureUAVCreateInfo info{
+    toneMappingOutputFormat,
+    width,
+    height,
+    &toneMapping.heap,
+    &toneMapping.output,
+    &toneMapping.outputUAVDesc,
+    &toneMapping.outputUAVDescIndex
+  };
+  createUAVTexture(info);
+  toneMapping.output->SetName(L"Tone mapping output resource");
 
-  //const DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
-
-  // Create the output resource. The dimensions and format should match the swap-chain.
-  auto uavDesc = CD3DX12_RESOURCE_DESC::Tex2D(toneMappingOutputFormat, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-
-  auto defaultHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-  hr = device->CreateCommittedResource(
-    &defaultHeapProperties,
-    D3D12_HEAP_FLAG_NONE,
-    &uavDesc,
-    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-    nullptr,
-    IID_PPV_ARGS(&toneMapping.output)
-  );
-  throwIfFailed(hr, "Could not create raytracing output resource");
-
-  toneMapping.output->SetName(L"Filter output resource");
-
-  D3D12_CPU_DESCRIPTOR_HANDLE uavDescriptorHandle;
-  toneMapping.outputUAVDescIndex = allocateDescriptor(toneMapping.heap, &uavDescriptorHandle, toneMapping.outputUAVDescIndex);
-
-  D3D12_UNORDERED_ACCESS_VIEW_DESC UAVDesc = {};
-  UAVDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-  device->CreateUnorderedAccessView(toneMapping.output, nullptr, &UAVDesc, uavDescriptorHandle);
-  toneMapping.outputUAVDesc = CD3DX12_GPU_DESCRIPTOR_HANDLE(toneMapping.heap.handle->GetGPUDescriptorHandleForHeapStart(), toneMapping.outputUAVDescIndex, toneMapping.heap.hardwareSize);
-
-  createTextureSRV(toneMapping.heap, filter.filterOutput, filterOutputFormat, toneMapping.filterDescIndex, toneMapping.filterDesc);
+  //createTextureSRV(toneMapping.heap, filter.filterOutput, filterOutputFormat, toneMapping.filterDescIndex, toneMapping.filterDesc);
+  createTextureSRV(toneMapping.heap, lightning.output, lightningOutputFormat, toneMapping.filterDescIndex, toneMapping.filterDesc);
+  //createTextureSRV(toneMapping.heap, filter.bilateralOutput, bilateralOutputFormat, toneMapping.filterDescIndex, toneMapping.filterDesc);
 }
 
 void DX12Render::createToneMappingPSO() {
@@ -3033,227 +3193,18 @@ void DX12Render::createToneMappingPSO() {
   rootParameters[0].InitAsDescriptorTable(1, &ranges[0]);
   rootParameters[1].InitAsDescriptorTable(1, &ranges[1]);
 
-  CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
-  rootSignatureDesc.Init(
-    _countof(rootParameters),
-    rootParameters,
-    0,
-    nullptr,
-    D3D12_ROOT_SIGNATURE_FLAG_NONE
-  );
-
-  ID3DBlob* signature;
-  hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr);
-  throwIfFailed(hr, "Failed to serialize root signature");
-
-  if (toneMapping.rootSignature == nullptr) {
-    hr = device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&toneMapping.rootSignature));
-    throwIfFailed(hr, "Failed to create root signature");
-  }
-
-#if defined(_DEBUG)
-  // Enable better shader debugging with the graphics debugging tools.
-  UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#else
-  UINT compileFlags = 0;
-#endif
-
-  // compile vertex shader
-  ID3DBlob* computeShader; // d3d blob for holding vertex shader bytecode
-  ID3DBlob* errorBuff; // a buffer holding the error data if any
-  hr = D3DCompileFromFile(
+  const CPCreateInfo info{
     L"toneMapping.hlsl",
-    nullptr,
-    nullptr,
-    "main",
-    "cs_5_0",
-    compileFlags,
-    0,
-    &computeShader,
-    &errorBuff
-  );
-
-  if (FAILED(hr)) {
-    OutputDebugStringA((char*)errorBuff->GetBufferPointer());
-    throw std::runtime_error("Compute shader creation error");
-  }
-
-  // fill out a shader bytecode structure, which is basically just a pointer
-  // to the shader bytecode and the size of the shader bytecode
-  const D3D12_SHADER_BYTECODE computeShaderBytecode = {
-    computeShader->GetBufferPointer(),
-    computeShader->GetBufferSize()
+    2,
+    rootParameters,
+    &toneMapping.rootSignature,
+    &toneMapping.pso
   };
-
-  const D3D12_COMPUTE_PIPELINE_STATE_DESC desc{
-    toneMapping.rootSignature,// рут сигнатура
-    computeShaderBytecode,// шейдер
-    0,
-    {
-      nullptr,
-      0
-    },
-    D3D12_PIPELINE_STATE_FLAG_NONE
-  };
-
-  hr = device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&toneMapping.pso));
-  throwIfFailed(hr, "Failed to create compute shader");
+  createComputeShader(info);
 
   //SAFE_RELEASE(computeShader)
   //SAFE_RELEASE(errorBuff)
 }
-
-//void DX12Render::buildGeometryDesc(std::array<std::vector<D3D12_RAYTRACING_GEOMETRY_DESC>, bottomLevelCount> &descs) {
-//  // Mark the geometry as opaque. 
-//  // PERFORMANCE TIP: mark geometry as opaque whenever applicable as it can enable important ray processing optimizations.
-//  // Note: When rays encounter opaque geometry an any hit shader will not be executed whether it is present or not.
-//  D3D12_RAYTRACING_GEOMETRY_FLAGS geometryFlags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
-//  descs[0].resize(GEOMETRY_TYPE_COUNT);
-//
-//  // описание бокса (я не понимаю как сделать одну геометрию на много объектов)
-//  //if (static_cast<uint32_t>(GeometryType::AABB) < bottomLevelCount) 
-//  {
-//    //descs[static_cast<uint32_t>(GeometryType::AABB)].resize(1);
-//    const D3D12_RAYTRACING_GEOMETRY_DESC boxDesc{
-//      D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
-//      geometryFlags,
-//      {
-//        0,
-//        DXGI_FORMAT_R32_UINT,
-//        DXGI_FORMAT_R32G32B32_FLOAT,
-//        boxIndicesCount,
-//        boxVerticesCount,
-//        boxIndexBuffer->GetGPUVirtualAddress() + boxIndicesStart * sizeof(uint32_t),
-//        {
-//          boxVertexBuffer->GetGPUVirtualAddress() + boxVerticesStart * sizeof(Vertex),
-//          sizeof(Vertex)
-//        }
-//      }
-//    };
-//
-//    descs[0][static_cast<uint32_t>(GeometryType::AABB)] = boxDesc;
-//  }
-//
-//  // геометрия плоскости
-//  //if (static_cast<uint32_t>(GeometryType::PLANE) < bottomLevelCount) 
-//  {
-//    //descs[static_cast<uint32_t>(GeometryType::PLANE)].resize(1);
-//    const D3D12_RAYTRACING_GEOMETRY_DESC planeDesc{
-//      D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
-//      geometryFlags,
-//      {
-//        0,
-//        DXGI_FORMAT_R32_UINT,
-//        DXGI_FORMAT_R32G32B32_FLOAT,
-//        planeIndicesCount,
-//        planeVerticesCount,
-//        boxIndexBuffer->GetGPUVirtualAddress() + planeIndicesStart * sizeof(uint32_t),
-//        {
-//          boxVertexBuffer->GetGPUVirtualAddress() + planeVerticesStart * sizeof(Vertex),
-//          sizeof(Vertex)
-//        }
-//      }
-//    };
-//
-//    descs[0][static_cast<uint32_t>(GeometryType::PLANE)] = planeDesc;
-//  }
-//
-//
-//  //if (static_cast<uint32_t>(GeometryType::ICOSAHEDRON) < bottomLevelCount)
-//  {
-//    //descs[static_cast<uint32_t>(GeometryType::ICOSAHEDRON)].resize(1);
-//    const D3D12_RAYTRACING_GEOMETRY_DESC icosahedronDesc{
-//      D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
-//      geometryFlags,
-//      {
-//        0,
-//        DXGI_FORMAT_R32_UINT,
-//        DXGI_FORMAT_R32G32B32_FLOAT,
-//        icosahedronIndicesCount,
-//        icosahedronVerticesCount,
-//        boxIndexBuffer->GetGPUVirtualAddress() + icosahedronIndicesStart * sizeof(uint32_t),
-//        {
-//          boxVertexBuffer->GetGPUVirtualAddress() + icosahedronVerticesStart * sizeof(Vertex),
-//          sizeof(Vertex)
-//        }
-//      }
-//    };
-//
-//    descs[0][static_cast<uint32_t>(GeometryType::ICOSAHEDRON)] = icosahedronDesc;
-//  }
-//
-//  //if (static_cast<uint32_t>(GeometryType::CONE) < bottomLevelCount) 
-//  {
-//    //descs[static_cast<uint32_t>(GeometryType::CONE)].resize(1);
-//    const D3D12_RAYTRACING_GEOMETRY_DESC coneDesc{
-//      D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
-//      geometryFlags,
-//      {
-//        0,
-//        DXGI_FORMAT_R32_UINT,
-//        DXGI_FORMAT_R32G32B32_FLOAT,
-//        coneIndicesCount,
-//        coneVerticesCount,
-//        boxIndexBuffer->GetGPUVirtualAddress() + coneIndicesStart * sizeof(uint32_t),
-//        {
-//          boxVertexBuffer->GetGPUVirtualAddress() + coneVerticesStart * sizeof(Vertex),
-//          sizeof(Vertex)
-//        }
-//      }
-//    };
-//
-//    descs[0][static_cast<uint32_t>(GeometryType::CONE)] = coneDesc;
-//  }
-//}
-
-//AccelerationStructureBuffers DX12Render::buildBottomLevel(const std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> &geometryDescs, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags) {
-//  ID3D12Resource* scratch = nullptr;
-//  ID3D12Resource* bottomLevelAS = nullptr;
-//
-//  D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS bottomInputs{
-//    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL,
-//    buildFlags,
-//    static_cast<uint32_t>(geometryDescs.size()),
-//    D3D12_ELEMENTS_LAYOUT_ARRAY,
-//    0
-//  };
-//  bottomInputs.pGeometryDescs = geometryDescs.data();
-//
-//  D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO bottomLevelPrebuildInfo = {};
-//  fallback.device->GetRaytracingAccelerationStructurePrebuildInfo(&bottomInputs, &bottomLevelPrebuildInfo);
-//
-//  throwIf(bottomLevelPrebuildInfo.ResultDataMaxSizeInBytes == 0, "ResultDataMaxSizeInBytes == 0");
-//
-//  allocateUAVBuffer(device, bottomLevelPrebuildInfo.ScratchDataSizeInBytes, &scratch, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"ScratchResource");
-//
-//  {
-//    D3D12_RESOURCE_STATES initialResourceState;
-//    initialResourceState = fallback.device->GetAccelerationStructureResourceState();
-//
-//    allocateUAVBuffer(device, bottomLevelPrebuildInfo.ResultDataMaxSizeInBytes, &bottomLevelAS, initialResourceState, L"BottomLevelAccelerationStructure");
-//  }
-//
-//  const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC bottomLevelBuildDesc{
-//    bottomLevelAS->GetGPUVirtualAddress(),
-//    bottomInputs,
-//    0,
-//    scratch->GetGPUVirtualAddress()
-//  };
-//
-//  // Set the descriptor heaps to be used during acceleration structure build for the Fallback Layer.
-//  ID3D12DescriptorHeap *pDescriptorHeaps[] = {rtHeap};
-//  fallback.commandList->SetDescriptorHeaps(ARRAYSIZE(pDescriptorHeaps), pDescriptorHeaps);
-//  fallback.commandList->BuildRaytracingAccelerationStructure(&bottomLevelBuildDesc, 0, nullptr);
-//
-//  AccelerationStructureBuffers buffers{
-//    scratch,
-//    bottomLevelAS,
-//    nullptr,
-//    bottomLevelPrebuildInfo.ResultDataMaxSizeInBytes
-//  };
-//
-//  return buffers;
-//}
 
 AccelerationStructureBuffers DX12Render::buildBottomLevel(const std::vector<BottomASCreateInfo> &infos) {
   ID3D12Resource* scratch = nullptr;
@@ -3713,4 +3664,123 @@ void DX12Render::createTextureSRV(DescriptorHeap &heap, ID3D12Resource* res, con
   SRVDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
   device->CreateShaderResourceView(res, &SRVDesc, srvDescriptorHandle);
   handle = CD3DX12_GPU_DESCRIPTOR_HANDLE(heap.handle->GetGPUDescriptorHandleForHeapStart(), index, heap.hardwareSize);
+}
+
+void DX12Render::createUAVTexture(const TextureUAVCreateInfo &info) {
+  HRESULT hr;
+
+  // Create the output resource. The dimensions and format should match the swap-chain.
+  auto uavDesc = CD3DX12_RESOURCE_DESC::Tex2D(info.format, info.width, info.height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+  auto defaultHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+  hr = device->CreateCommittedResource(
+    &defaultHeapProperties,
+    D3D12_HEAP_FLAG_NONE,
+    &uavDesc,
+    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+    nullptr,
+    //IID_PPV_ARGS(&lightning.output)
+    IID_PPV_ARGS(info.texture)
+  );
+  throwIfFailed(hr, "Could not create raytracing output resource");
+
+  //(*info.texture)->SetName(L"Filter output resource");
+
+  createTextureUAV(*info.heap, *info.texture, *info.heapIndex, *info.descriptor);
+
+  /*D3D12_CPU_DESCRIPTOR_HANDLE uavDescriptorHandle;
+  *info.heapIndex = allocateDescriptor(*info.heap, &uavDescriptorHandle, *info.heapIndex);
+
+  D3D12_UNORDERED_ACCESS_VIEW_DESC UAVDesc = {};
+  UAVDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+  device->CreateUnorderedAccessView(*info.texture, nullptr, &UAVDesc, uavDescriptorHandle);
+  *info.descriptor = CD3DX12_GPU_DESCRIPTOR_HANDLE(info.heap->handle->GetGPUDescriptorHandleForHeapStart(), *info.heapIndex, info.heap->hardwareSize);*/
+}
+
+void DX12Render::createDescriptorHeap(const uint32_t &descriptorCount, DescriptorHeap &heap) {
+  HRESULT hr;
+
+  const D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {
+    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+    descriptorCount,
+    D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+    0
+  };
+
+  hr = device->CreateDescriptorHeap(&descriptorHeapDesc, IID_PPV_ARGS(&heap.handle));
+  throwIfFailed(hr, "Could not create descriptor heap for filter");
+  heap.handle->SetName(L"descriptor heap for filter");
+
+  heap.hardwareSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  heap.allocatedCount = 0;
+}
+
+void DX12Render::createComputeShader(const CPCreateInfo &info) {
+  HRESULT hr;
+
+  CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+  rootSignatureDesc.Init(
+    info.rootParametersCount,
+    info.rootParameters,
+    0,
+    nullptr,
+    D3D12_ROOT_SIGNATURE_FLAG_NONE
+  );
+
+  ID3DBlob* signature;
+  hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr);
+  throwIfFailed(hr, "Failed to serialize root signature");
+
+  if (*info.rootSignature == nullptr) {
+    hr = device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(info.rootSignature));
+    throwIfFailed(hr, "Failed to create root signature");
+  }
+
+#if defined(_DEBUG)
+  // Enable better shader debugging with the graphics debugging tools.
+  UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+  UINT compileFlags = 0;
+#endif
+
+  // compile vertex shader
+  ID3DBlob* computeShader; // d3d blob for holding vertex shader bytecode
+  ID3DBlob* errorBuff; // a buffer holding the error data if any
+  hr = D3DCompileFromFile(
+    info.computeShaderPath.c_str(),
+    nullptr,
+    D3D_COMPILE_STANDARD_FILE_INCLUDE,
+    "main",
+    "cs_5_0",
+    compileFlags,
+    0,
+    &computeShader,
+    &errorBuff
+  );
+
+  if (FAILED(hr)) {
+    OutputDebugStringA((char*)errorBuff->GetBufferPointer());
+    throw std::runtime_error("Compute shader creation error");
+  }
+
+  // fill out a shader bytecode structure, which is basically just a pointer
+  // to the shader bytecode and the size of the shader bytecode
+  const D3D12_SHADER_BYTECODE computeShaderBytecode = {
+    computeShader->GetBufferPointer(),
+    computeShader->GetBufferSize()
+  };
+
+  const D3D12_COMPUTE_PIPELINE_STATE_DESC desc{
+    *info.rootSignature, // рут сигнатура
+    computeShaderBytecode, // шейдер
+    0,
+    {
+      nullptr,
+      0
+    },
+    D3D12_PIPELINE_STATE_FLAG_NONE
+  };
+
+  hr = device->CreateComputePipelineState(&desc, IID_PPV_ARGS(info.PSO));
+  throwIfFailed(hr, "Failed to create bilateral pso");
 }

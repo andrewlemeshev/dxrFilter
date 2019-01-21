@@ -65,15 +65,17 @@ struct RayTracing {
   ID3D12RootSignature* globalRootSignature;
   ID3D12RootSignature* localRootSignature;
 
-  // это теперь видимо не нужно 
   ID3D12Resource* accelerationStructure;
   ID3D12Resource* bottomLevelAccelerationStructure;
   ID3D12Resource* topLevelAccelerationStructure;
 
   ID3D12Resource* raytracingOutput;
+  ID3D12Resource* shadowOutput;
   //D3D12_GPU_DESCRIPTOR_HANDLE raytracingOutputResourceUAVGpuDescriptor;
   DXDescriptors outputResourceDescriptors;
   uint32_t raytracingOutputResourceUAVDescriptorHeapIndex;
+  DXDescriptors shadowDescriptors;
+  uint32_t shadowHeapIndex;
 
   D3D12_GPU_DESCRIPTOR_HANDLE colorBufferDescriptor;
   uint32_t colorBufferHeapIndex;
@@ -102,6 +104,8 @@ struct Filter {
   ID3D12Resource* colorLast;
   ID3D12Resource* depthLast;
 
+  ID3D12Resource* bilateralOutput;
+
   D3D12_GPU_DESCRIPTOR_HANDLE filterOutputUAVDesc;
   uint32_t filterOutputUAVDescIndex;
 
@@ -115,13 +119,47 @@ struct Filter {
   D3D12_GPU_DESCRIPTOR_HANDLE lastFrameDepthDescriptor;
   uint32_t lastFrameDepthHeapIndex;
 
+  D3D12_GPU_DESCRIPTOR_HANDLE bilateralOutputUAVDesc;
+  uint32_t bilateralOutputUAVDescIndex;
+  D3D12_GPU_DESCRIPTOR_HANDLE bilateralInputUAVDesc;
+  uint32_t bilateralInputUAVDescIndex;
+  D3D12_GPU_DESCRIPTOR_HANDLE bilateralNormalDesc;
+  uint32_t bilateralNormalHeapIndex;
+
   ID3D12Resource* constantBuffer;
+  // возможно мне пригодится еще один constant buffer
 
   DescriptorHeap heap;
 
   ID3D12RootSignature* rootSignature;
   ID3D12PipelineState* pso;
+
+  ID3D12RootSignature* bilateralRootSignature;
+  ID3D12PipelineState* bilateralPSO;
   // что-то еще?
+};
+
+struct LightningCalculation {
+  ID3D12Resource* output;
+
+  D3D12_GPU_DESCRIPTOR_HANDLE outputDescriptor;
+  uint32_t outputHeapIndex;
+
+  D3D12_GPU_DESCRIPTOR_HANDLE colorDescriptor;
+  uint32_t colorHeapIndex;
+  D3D12_GPU_DESCRIPTOR_HANDLE normalDescriptor;
+  uint32_t normalHeapIndex;
+  D3D12_GPU_DESCRIPTOR_HANDLE depthDescriptor;
+  uint32_t depthHeapIndex;
+  D3D12_GPU_DESCRIPTOR_HANDLE shadowDescriptor;
+  uint32_t shadowHeapIndex;
+
+  DescriptorHeap heap;
+
+  ID3D12RootSignature* rootSignature;
+  ID3D12PipelineState* pso;
+
+  ID3D12Resource* sceneConstantBuffer;
 };
 
 struct ToneMapping {
@@ -146,6 +184,7 @@ enum class GlobalRootSignatureParams : uint32_t {
   SCENE_CONSTANT,
   VERTEX_BUFFERS,
   RANDOM_TEXTURE,
+  SHADOW_TEXTURE,
   COUNT
 };
 
@@ -254,6 +293,9 @@ private:
   ID3D12DescriptorHeap* dsDescriptorHeap = nullptr;
 
   GBuffer gBuffer;
+  DXGI_FORMAT colorBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+  DXGI_FORMAT normalBufferFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  DXGI_FORMAT depthBufferFormat = DXGI_FORMAT_D32_FLOAT;
 
   // orientation buffer
   ID3D12Resource* ornBuffer = nullptr;
@@ -261,6 +303,8 @@ private:
 
   //DXGI_FORMAT rayTracingOutputFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
   DXGI_FORMAT rayTracingOutputFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  //DXGI_FORMAT shadowOutputFormat = DXGI_FORMAT_R32_FLOAT;
+  DXGI_FORMAT shadowOutputFormat = DXGI_FORMAT_R32G32_FLOAT;
   RayTracing fallback;
   SceneConstantBuffer* sceneConstantBufferPtr = nullptr;
   RayGenConstantBuffer rayGenCB;
@@ -277,6 +321,8 @@ private:
 
   //DXGI_FORMAT filterOutputFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
   DXGI_FORMAT filterOutputFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  //DXGI_FORMAT bilateralOutputFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  DXGI_FORMAT bilateralOutputFormat = DXGI_FORMAT_R32G32_FLOAT;
   Filter filter;
   glm::mat4 oldViewProj;
   FilterConstantData* filterConstantDataPtr = nullptr;
@@ -284,19 +330,23 @@ private:
   DXGI_FORMAT toneMappingOutputFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
   ToneMapping toneMapping;
 
+  DXGI_FORMAT lightningOutputFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  LightningCalculation lightning;
+
   void loadModels(std::vector<uint32_t> &indices, std::vector<Vertex> &vertices);
 
-  void createRTResources(const uint32_t &width, const uint32_t &height);
+  //void createRTResources(const uint32_t &width, const uint32_t &height);
   void createRayTracingFallbackDevice();
   void createRootSignatures();
   void serializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC &desc, ID3D12RootSignature** rootSig);
   void createRaytracingPSO();
   void createLocalRootSignatureSubobjects(CD3D12_STATE_OBJECT_DESC* raytracingPipeline);
   void createRTDescriptorHeap();
-  void buildAccelerationStructures();
+  //void buildAccelerationStructures();
   void buildAccelerationStructures2(const GPUBuffer<ComputeData> &boxBuffer, const GPUBuffer<ComputeData> &icosahedronBuffer, const GPUBuffer<ComputeData> &coneBuffer);
   void buildShaderTables();
   void createRaytracingOutputResource(const uint32_t &width, const uint32_t &height);
+  void createShadowOutputResource(const uint32_t &width, const uint32_t &height);
   void createDescriptors();
   void initializeScene();
 
@@ -308,6 +358,15 @@ private:
   void createFilterLastFrameData(const uint32_t &width, const uint32_t &height);
   void createFilterConstantBuffer();
   void createFilterPSO();
+  void createBilateralOutputTexture(const uint32_t &width, const uint32_t &height);
+  void createBilateralConstantBuffer();
+  void createBilateralPSO();
+
+  void createLightningResources(const uint32_t &width, const uint32_t &height);
+  void createLightningDescriptorHeap();
+  void createLightningOutputTexture(const uint32_t &width, const uint32_t &height);
+  void createLightningConstantBuffer(); // наверное вообще не потребуется
+  void createLightningPSO();
 
   void createToneMappingResources(const uint32_t &width, const uint32_t &height);
   void createToneMappingDescriptorHeap();
@@ -325,6 +384,31 @@ private:
   uint32_t createBufferSRV(DescriptorHeap &heap, ID3D12Resource* res, DXDescriptors* buffer, const uint32_t &numElements, const uint32_t &elementSize);
   void createTextureUAV(DescriptorHeap &heap, ID3D12Resource* res, uint32_t &index, D3D12_GPU_DESCRIPTOR_HANDLE &handle);
   void createTextureSRV(DescriptorHeap &heap, ID3D12Resource* res, const DXGI_FORMAT &format, uint32_t &index, D3D12_GPU_DESCRIPTOR_HANDLE &handle);
+
+  struct TextureUAVCreateInfo {
+    DXGI_FORMAT format;
+    uint32_t width;
+    uint32_t height;
+    DescriptorHeap* heap;
+
+    ID3D12Resource** texture;
+    D3D12_GPU_DESCRIPTOR_HANDLE* descriptor;
+    uint32_t* heapIndex;
+  };
+
+  // cp - compute pipeline
+  struct CPCreateInfo {
+    std::wstring computeShaderPath;
+    uint32_t rootParametersCount;
+    CD3DX12_ROOT_PARAMETER* rootParameters;
+
+    ID3D12RootSignature** rootSignature;
+    ID3D12PipelineState** PSO;
+  };
+
+  void createUAVTexture(const TextureUAVCreateInfo &info);
+  void createDescriptorHeap(const uint32_t &descriptorCount, DescriptorHeap &heap);
+  void createComputeShader(const CPCreateInfo &info);
 };
 
 #endif
