@@ -106,6 +106,8 @@ struct Filter {
 
   ID3D12Resource* bilateralOutput;
 
+  ID3D12Resource* pixelAdditionOutput;
+
   D3D12_GPU_DESCRIPTOR_HANDLE filterOutputUAVDesc;
   uint32_t filterOutputUAVDescIndex;
 
@@ -119,12 +121,21 @@ struct Filter {
   D3D12_GPU_DESCRIPTOR_HANDLE lastFrameDepthDescriptor;
   uint32_t lastFrameDepthHeapIndex;
 
+  D3D12_GPU_DESCRIPTOR_HANDLE pixelAdditionOutputDesc;
+  uint32_t pixelAdditionOutputIndex;
+  D3D12_GPU_DESCRIPTOR_HANDLE pixelAdditionInputDesc;
+  uint32_t pixelAdditionInputIndex;
+  D3D12_GPU_DESCRIPTOR_HANDLE pixelAdditionNormalDesc;
+  uint32_t pixelAdditionNormalIndex;
+
   D3D12_GPU_DESCRIPTOR_HANDLE bilateralOutputUAVDesc;
   uint32_t bilateralOutputUAVDescIndex;
   D3D12_GPU_DESCRIPTOR_HANDLE bilateralInputUAVDesc;
   uint32_t bilateralInputUAVDescIndex;
   D3D12_GPU_DESCRIPTOR_HANDLE bilateralNormalDesc;
   uint32_t bilateralNormalHeapIndex;
+  D3D12_GPU_DESCRIPTOR_HANDLE bilateralPixelDataDesc;
+  uint32_t bilateralPixelDataHeapIndex;
 
   ID3D12Resource* constantBuffer;
   // возможно мне пригодится еще один constant buffer
@@ -136,6 +147,9 @@ struct Filter {
 
   ID3D12RootSignature* bilateralRootSignature;
   ID3D12PipelineState* bilateralPSO;
+
+  ID3D12RootSignature* pixelAdditionRootSignature;
+  ID3D12PipelineState* pixelAdditionPSO;
   // что-то еще?
 };
 
@@ -322,6 +336,7 @@ private:
   //DXGI_FORMAT filterOutputFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
   DXGI_FORMAT filterOutputFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
   //DXGI_FORMAT bilateralOutputFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  DXGI_FORMAT pixelAdditionOutputFormat = DXGI_FORMAT_R32G32_UINT;
   DXGI_FORMAT bilateralOutputFormat = DXGI_FORMAT_R32G32_FLOAT;
   Filter filter;
   glm::mat4 oldViewProj;
@@ -358,6 +373,11 @@ private:
   void createFilterLastFrameData(const uint32_t &width, const uint32_t &height);
   void createFilterConstantBuffer();
   void createFilterPSO();
+
+  void createPixelAdditionOutputTexture(const uint32_t &width, const uint32_t &height);
+  void createPixelAdditionConstantBuffer();
+  void createPixelAdditionPSO();
+
   void createBilateralOutputTexture(const uint32_t &width, const uint32_t &height);
   void createBilateralConstantBuffer();
   void createBilateralPSO();

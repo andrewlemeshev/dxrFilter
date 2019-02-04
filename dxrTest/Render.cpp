@@ -199,6 +199,11 @@ DX12Render::DX12Render() {
   filter.filterOutputUAVDescIndex = UINT32_MAX;
   filter.bilateralOutputUAVDescIndex = UINT32_MAX;
   filter.bilateralInputUAVDescIndex = UINT32_MAX;
+  filter.bilateralNormalHeapIndex = UINT32_MAX;
+  filter.bilateralPixelDataHeapIndex = UINT32_MAX;
+  filter.pixelAdditionOutputIndex = UINT32_MAX;
+  filter.pixelAdditionInputIndex = UINT32_MAX;
+  filter.pixelAdditionNormalIndex = UINT32_MAX;
 
   filter.colorBufferHeapIndex = UINT32_MAX;
   filter.depthBufferHeapIndex = UINT32_MAX;
@@ -1459,10 +1464,31 @@ void DX12Render::filterPart() {
   const uint32_t dispatchY = glm::ceil(float(720)  / float(LOCAL_WORK_GROUP));
   commandList->Dispatch(dispatchX, dispatchY, 1);
 
+
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
       CD3DX12_RESOURCE_BARRIER::UAV(filter.filterOutput),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ)
+    };
+
+    commandList->ResourceBarrier(_countof(barriers), barriers);
+  }
+
+  commandList->SetComputeRootSignature(filter.pixelAdditionRootSignature);
+
+  commandList->SetDescriptorHeaps(1, &filter.heap.handle);
+
+  commandList->SetComputeRootDescriptorTable(0, filter.pixelAdditionOutputDesc);
+  commandList->SetComputeRootDescriptorTable(1, filter.pixelAdditionInputDesc);
+
+  commandList->SetPipelineState(filter.pixelAdditionPSO);
+
+  commandList->Dispatch(1280, 720, 1);
+
+  {
+    const D3D12_RESOURCE_BARRIER barriers[] = {
+      CD3DX12_RESOURCE_BARRIER::UAV(filter.pixelAdditionOutput),
+      CD3DX12_RESOURCE_BARRIER::Transition(filter.pixelAdditionOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ)
     };
 
     commandList->ResourceBarrier(_countof(barriers), barriers);
@@ -2795,6 +2821,10 @@ void DX12Render::createFilterResources(const uint32_t &width, const uint32_t &he
   createFilterConstantBuffer();
   createFilterPSO();
 
+  createPixelAdditionOutputTexture(width, height);
+  createPixelAdditionConstantBuffer();
+  createPixelAdditionPSO();
+
   createBilateralOutputTexture(width, height);
   createBilateralConstantBuffer();
   createBilateralPSO();
@@ -2809,8 +2839,9 @@ void DX12Render::createFilterDescriptorHeap() {
 
   const uint32_t filterBuffers = 1;                        // const buffer
   const uint32_t filterTextures = 1+2+2;                   // output, color, depth, last color, last depth
-  const uint32_t bilateralFilter = 3;                      // output, color, normal
-  const uint32_t descriptorsCount = filterBuffers + filterTextures + bilateralFilter;
+  const uint32_t bilateralFilter = 4;                      // output, color, normal, pixelData
+  const uint32_t pixelAdditionFilter = 3;                  // output, color, normal
+  const uint32_t descriptorsCount = filterBuffers + filterTextures + bilateralFilter + pixelAdditionFilter;
 
   createDescriptorHeap(descriptorsCount, filter.heap);
 }
@@ -3041,6 +3072,49 @@ void DX12Render::createFilterPSO() {
   //SAFE_RELEASE(errorBuff)
 }
 
+void DX12Render::createPixelAdditionOutputTexture(const uint32_t &width, const uint32_t &height) {
+  const TextureUAVCreateInfo info{
+    pixelAdditionOutputFormat,
+    width,
+    height,
+    &filter.heap,
+    &filter.pixelAdditionOutput,
+    &filter.pixelAdditionOutputDesc,
+    &filter.pixelAdditionOutputIndex
+  };
+  createUAVTexture(info);
+  filter.pixelAdditionOutput->SetName(L"Pixel addition output resource");
+
+  //createTextureSRV(filter.heap, filter.filterOutput, filterOutputFormat, filter.bilateralInputUAVDescIndex, filter.bilateralInputUAVDesc);
+  createTextureSRV(filter.heap, fallback.shadowOutput, shadowOutputFormat, filter.pixelAdditionInputIndex, filter.pixelAdditionInputDesc);
+  createTextureSRV(filter.heap, gBuffer.normal, normalBufferFormat, filter.pixelAdditionNormalIndex, filter.pixelAdditionNormalDesc);
+}
+
+void DX12Render::createPixelAdditionConstantBuffer() {
+
+}
+
+void DX12Render::createPixelAdditionPSO() {
+  HRESULT hr;
+
+  CD3DX12_DESCRIPTOR_RANGE ranges[2];
+  ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+  ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
+
+  CD3DX12_ROOT_PARAMETER rootParameters[2];
+  rootParameters[0].InitAsDescriptorTable(1, &ranges[0]);
+  rootParameters[1].InitAsDescriptorTable(1, &ranges[1]);
+
+  const CPCreateInfo info{
+    L"pixelAddition.hlsl",
+    _countof(rootParameters),
+    rootParameters,
+    &filter.pixelAdditionRootSignature,
+    &filter.pixelAdditionPSO
+  };
+  createComputeShader(info);
+}
+
 void DX12Render::createBilateralOutputTexture(const uint32_t &width, const uint32_t &height) {
   const TextureUAVCreateInfo info{
     bilateralOutputFormat,
@@ -3057,6 +3131,7 @@ void DX12Render::createBilateralOutputTexture(const uint32_t &width, const uint3
   //createTextureSRV(filter.heap, filter.filterOutput, filterOutputFormat, filter.bilateralInputUAVDescIndex, filter.bilateralInputUAVDesc);
   createTextureSRV(filter.heap, fallback.shadowOutput, shadowOutputFormat, filter.bilateralInputUAVDescIndex, filter.bilateralInputUAVDesc);
   createTextureSRV(filter.heap, gBuffer.normal, normalBufferFormat, filter.bilateralNormalHeapIndex, filter.bilateralNormalDesc);
+  createTextureSRV(filter.heap, filter.pixelAdditionOutput, pixelAdditionOutputFormat, filter.bilateralPixelDataHeapIndex, filter.bilateralPixelDataDesc);
 }
 
 void DX12Render::createBilateralConstantBuffer() {
@@ -3068,7 +3143,7 @@ void DX12Render::createBilateralPSO() {
 
   CD3DX12_DESCRIPTOR_RANGE ranges[2];
   ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
-  ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
+  ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
 
   CD3DX12_ROOT_PARAMETER rootParameters[2];
   rootParameters[0].InitAsDescriptorTable(1, &ranges[0]);

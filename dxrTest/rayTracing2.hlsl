@@ -379,7 +379,7 @@ void rayGen() {
   // 
 
   // Reflected component.
-  float4 reflectedColor = float4(0, 0, 0, 0); 
+  //float4 reflectedColor = float4(0, 0, 0, 0); 
   //// коэффициент отражения какой?
   //if (material.reflectanceCoef > 0.001) {
   //  // Trace a reflection ray.
@@ -391,14 +391,14 @@ void rayGen() {
   //  reflectedColor = material.reflectanceCoef * float4(fresnelR, 1) * reflectionColor;
   //}
 
-  float4 phongColor = сalculatePhong(albedoColor, pos.xyz, cameraRayDir.xyz, dir.xyz, shadowRayHit, material.diffuseCoef, material.specularCoef, material.specularPower);
-  float4 color = phongColor + reflectedColor;
+  //float4 phongColor = сalculatePhong(albedoColor, pos.xyz, cameraRayDir.xyz, dir.xyz, shadowRayHit, material.diffuseCoef, material.specularCoef, material.specularPower);
+  //float4 color = phongColor + reflectedColor;
 
-  // Apply visibility falloff.
-  float t = depth;
-  color = lerp(color, backgroundColor, 1.0 - exp(-0.000002*t*t*t));
+  //// Apply visibility falloff.
+  //float t = depth;
+  //color = lerp(color, backgroundColor, 1.0 - exp(-0.000002*t*t*t));
 
-  RenderTarget[DTid] = color;
+  //RenderTarget[DTid] = color;
   shadowTarget[DTid] = float2(float(shadowRayHit), load.hitDist);
 
   // как верно передать тень в другую текстуру?
