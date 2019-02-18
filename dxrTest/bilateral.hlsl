@@ -16,7 +16,8 @@ static const uint2 resolution = uint2(1280, 720);
 RWTexture2D<float2> output : register(u0);
 Texture2D<float2> colors : register(t0);
 Texture2D<float4> normals : register(t1);
-Texture2D<uint2> pixelDatas : register(t2);
+Texture2D<float> depths : register(t2);
+Texture2D<uint2> pixelDatas : register(t3);
 
 float distance(const uint2 xy, const uint2 ij) {
   const int xi = int(xy.x - ij.x);
@@ -56,11 +57,22 @@ void main(uint3 DTid : SV_DispatchThreadID) {
 
   //const float l = lum(colors[coord]);
   const float2 current = colors[coord];
-  const float l = current.x;
-  const float dist = current.y;
   const float4 normal = normals[coord];
   const uint2 pixelData = pixelDatas[coord];
   const float coef = float(pixelData.y) / float(pixelData.x);
+  const float l = coef < 0.07f ? 0.0f : (coef > 0.93f ? 1.0f : current.x);
+  const float dist = current.y;
+
+  const float2 texelSize = 1.0f / float2(resolution);
+
+  //float Z = texPosition.Sample(colorSampler, input.uv).z;
+  const float depth = depths[coord];
+  const float Z_X1 = coord.x-1 > 0            ? depths[uint2(coord.x-1, coord.y)] : 1e9;
+  const float Z_X2 = coord.x+1 < resolution.x ? depths[uint2(coord.x+1, coord.y)] : 1e9;
+  const float Z_Y1 = coord.y-1 > 0            ? depths[uint2(coord.x, coord.y-1)] : 1e9;
+  const float Z_Y2 = coord.y+1 < resolution.y ? depths[uint2(coord.x, coord.y+1)] : 1e9;
+  const float Z_DDX = abs(Z_X1 - depth) < abs(Z_X2 - depth) ? depth - Z_X1 : Z_X2 - depth;
+  const float Z_DDY = abs(Z_Y1 - depth) < abs(Z_Y2 - depth) ? depth - Z_Y1 : Z_Y2 - depth;
 
   // мне нужно что-то сделать с диаметром 
   // как то его нужно менять в зависимости от того что у меня есть
@@ -75,67 +87,178 @@ void main(uint3 DTid : SV_DispatchThreadID) {
   // чем дальше хит дист тем больше размывать, но скорее всего у разных точек разный вес
   // + ко всему прочему не у всех точек есть этот райхитдист
 
+  // короч комбинирование этих переменных по идее даст мне неплохие результаты
+  // сейчас у меня получается сильно размыть пенумбру и достаточно быстро
+  // но 
+  // не получается убрать артефакты
+  // тень немного уезжает от краев (причем скорее всего мне нужно правильно воспользоваться тем что есть)
+  // размытие слишком резкое (мягче переход от тени к пенубре)
+  // не особо понимаю как правильно воспользоваться rayHitDist, может быть мне не нужно нормализованое значение
+  const float shadowZero = abs(1.0f - coef);
+  const float rayHitDist = min(dist, 1.0f);
+  // может быть что то на что то нужно умножить
+
   // это более менее помогает, но остаются белые точки
   // теперь белых точек меньше, но все равно неочень
-  const uint newDiameter = uint(pixelData.y != 0 || pixelData.y != pixelData.x) * diameter * max(abs(l - coef), 0.2f); // 1.0f - coef
+  //const uint newDiameter = uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * max(abs(l - coef), 0.2f); // 1.0f - coef
+  // надо что то придумать с max'ом, это из-за него съезжает немного вбок
+  //const uint newDiameter = uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(l - coef), 0.2f);
+  //const uint newDiameter = uint(coef > 0.07f && coef < 0.93f) * diameter * (dist == 0.0f ? abs(1.0f - coef) : min(dist, 1.0f));
+  //const uint newDiameter = uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
+
+  const uint kernelSize = radius * 2 + 1;
+  const float sigma = (2 * pow((kernelSize - 1.0) / 6.0, 2)); // make the kernel span 6 sigma
+  float result = 0.0f;
+  float totalWeight = 0.0f;
 
   // тогда сильно размывается тень, из-за чего появляются проблемы на краях
-  //const uint newDiameter = uint(pixelData.y != 0) * diameter;
-  for (uint i = 0; i < newDiameter; i++) {
-    for (uint j = 0; j < newDiameter; j++) {
+  //const uint newDiameter = uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter;
+  const uint newDiameter = uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * abs(1.0f - coef);
+  for (uint i = 0; i < newDiameter; ++i) {
+    for (uint j = 0; j < newDiameter; ++j) {
       const int2 offset = int2(radius - i, radius - j);
       const uint2 neighbor = coord + offset;
 
-      const float4 normalNeighbor = normals[neighbor];
       const uint2 neighborPixelData = pixelDatas[neighbor];
       const float neighborCoef = float(neighborPixelData.y) / float(neighborPixelData.x);
-      //if (!eq(normal, normalNeighbor)) continue;
-      const bool b = eq(normal, normalNeighbor);
+      const float invNeighborCoef = abs(1.0f - neighborCoef);
 
+      const float kernelWeight = exp(-length(float2(offset.x, offset.y)) / sigma);
+      //float2 offset = float2(float(offset.x), float(offset.y)) * texelSize;
+      
+      const float ZTmp = depths[neighbor];
+      const float ZDeltaApprox = abs(dot(float2(Z_DDX, Z_DDY), float2(offset.x, offset.y)));
+      const float ZDelta = abs(depth - ZTmp);
+      float ZWeight = exp(-ZDelta / (ZDeltaApprox + 0.001));
+      
+      const float4 NTmp = normals[neighbor];
+      //NTmp = normalize(NTmp * 2 - 1);
+      const float normalWeight = pow(max(0, dot(normal, NTmp)), 128);
+      
+      //ZWeight = 1;
+      const float weight = ZWeight * normalWeight;
+      
       const float2 offsetData = colors[neighbor];
       const float offsetColor = offsetData.x;
       const float dist = offsetData.y;
+      result += offsetColor * kernelWeight * weight; // * invNeighborCoef
+      totalWeight += kernelWeight * weight; //  + dist // сильно четко граница проступает
 
-      // короч, мне нужно как то добавить сюда данные о дальности
-      // причем так чтобы эта дальность увеличивала вес этого пикселя
-      // чем больше дальность тем больше вес? вообще это по идее не важно
-      // так как мне нужно чтобы пиксель в котором тень есть давал чуть больше,
-      // чем пиксель в котором тени нет
-      // как это сделать? насколько больше?
-      
-      // умножение размывает чуть больше пенумбру которая находится у нормальной тени
-      // это более менее то что нужно, но я не понимаю до конца зависимость
+      //
 
-      // суть такова, мне нужно чтобы тень "затухала" по мере удаления от основной тени
-      // помоему в реальной жизни тень "затухает" не линейно, но мне бы хотя бы и такое поведение
-      // как это сделать? как раз таки я думал что с этим поможет пересчитать пиксели вокруг
-      // то есть в квадрате 9х9 есть например 1 пиксель с тенью
+      //const int2 offset = int2(radius - i, radius - j);
+      //const uint2 neighbor = coord + offset;
 
-      // короч, считаю количество пикселей
-      // на картинке получается более менее затухающее изображение с некоторыми артефактами
-      // разница между верхним и нижними значениями сильно уменьшилась
-      // меня лишь беспокоят артефакты на самых краях, 
-      // но с другой стороны нам должен помочь rayHitDist 
-      // я вообще могу просто откидывать ситуации в которых там меньше 10% попаданий
-      // но скорее всего мне нужно будет это делать по умному, 
-      // например мало процентов и большой хит - откидываем
-      // что делать с остальным? 
-      // вообще билатеральный фильтр по этим значениям может сделать все даже лучше чем с расстояниями
+      //const float4 normalNeighbor = normals[neighbor];
+      //const uint2 neighborPixelData = pixelDatas[neighbor];
+      //const float neighborCoef = float(neighborPixelData.y) / float(neighborPixelData.x);
+      ////if (!eq(normal, normalNeighbor)) continue;
+      //const bool b = eq(normal, normalNeighbor);
 
-      const float distS = length(float2(offset)) * dist * (0.5f);
-      //float distL = lum(offsetColor) - l;
-      //const float distL = offsetColor - l;
-      const float distL = neighborCoef - coef;
+      //const float2 offsetData = colors[neighbor];
+      //const float offsetColor = offsetData.x;
+      //const float dist = offsetData.y;
 
-      const float wS = exp(facS*float(distS*distS));
-      const float wL = exp(facL*float(distL*distL));
-      const float w = wS * wL * float(b);
+      //// короч, мне нужно как то добавить сюда данные о дальности
+      //// причем так чтобы эта дальность увеличивала вес этого пикселя
+      //// чем больше дальность тем больше вес? вообще это по идее не важно
+      //// так как мне нужно чтобы пиксель в котором тень есть давал чуть больше,
+      //// чем пиксель в котором тени нет
+      //// как это сделать? насколько больше?
+      //
+      //// умножение размывает чуть больше пенумбру которая находится у нормальной тени
+      //// это более менее то что нужно, но я не понимаю до конца зависимость
 
-      sumW += w;
-      sumC += offsetColor * w;
+      //// суть такова, мне нужно чтобы тень "затухала" по мере удаления от основной тени
+      //// помоему в реальной жизни тень "затухает" не линейно, но мне бы хотя бы и такое поведение
+      //// как это сделать? как раз таки я думал что с этим поможет пересчитать пиксели вокруг
+      //// то есть в квадрате 9х9 есть например 1 пиксель с тенью
+
+      //// короч, считаю количество пикселей
+      //// на картинке получается более менее затухающее изображение с некоторыми артефактами
+      //// разница между верхним и нижними значениями сильно уменьшилась
+      //// меня лишь беспокоят артефакты на самых краях, 
+      //// но с другой стороны нам должен помочь rayHitDist 
+      //// я вообще могу просто откидывать ситуации в которых там меньше 10% попаданий
+      //// но скорее всего мне нужно будет это делать по умному, 
+      //// например мало процентов и большой хит - откидываем
+      //// что делать с остальным? 
+      //// вообще билатеральный фильтр по этим значениям может сделать все даже лучше чем с расстояниями
+
+      //const float distS = length(float2(offset)) * dist * (0.5f);
+      ////float distL = lum(offsetColor) - l;
+      ////const float distL = offsetColor - l;
+      //const float distL = neighborCoef - coef;
+
+      //const float wS = exp(facS*float(distS*distS));
+      //const float wL = exp(facL*float(distL*distL));
+      //const float w = wS * wL * float(b);
+
+      //sumW += w;
+      //sumC += offsetColor * w;
     }
   }
 
-  output[coord] = sumW == 0.0f ? float2(l, dist) : float2(sumC / sumW, dist);
+  //output[coord] = sumW == 0.0f ? float2(l, dist) : float2(sumC / sumW, dist);
+  output[coord] = totalWeight == 0.0f ? float2(l, dist) : float2(result / totalWeight, dist);
   //output[coord] = colors[coord];
 }
+
+
+//Texture2D texSSAO : register(t0);
+//Texture2D texPosition : register(t1);
+//Texture2D texNormal : register(t2);
+//sampler colorSampler : register(s10);
+//
+//struct VS_Output {
+//  float2 uv: TEXCOORD0;
+//};
+//
+//float main(VS_Output input) : SV_Target {
+//  const int blurRange = 8;
+//  float TotalWeight = 0;
+//
+//  int2 textureSize;
+//  texSSAO.GetDimensions(textureSize.x, textureSize.y);
+//  float2 texelSize = 1.0 / float2(textureSize);
+//  float result = 0.0;
+//
+//  float Z = texPosition.Sample(colorSampler, input.uv).z;
+//  float Z_X1 = input.uv.x > 0 ? texPosition.Sample(colorSampler, float2(input.uv.x - texelSize.x, input.uv.y)) : 1e9;
+//  float Z_X2 = input.uv.x < 1 ? texPosition.Sample(colorSampler, float2(input.uv.x + texelSize.x, input.uv.y)) : 1e9;
+//  float Z_Y1 = input.uv.y > 0 ? texPosition.Sample(colorSampler, float2(input.uv.x, input.uv.y - texelSize.y)) : 1e9;
+//  float Z_Y2 = input.uv.y < 1 ? texPosition.Sample(colorSampler, float2(input.uv.x, input.uv.y + texelSize.y)) : 1e9;
+//  float Z_DDX = abs(Z_X1 - Z) < abs(Z_X2 - Z) ? Z - Z_X1 : Z_X2 - Z;
+//  float Z_DDY = abs(Z_Y1 - Z) < abs(Z_Y2 - Z) ? Z - Z_Y1 : Z_Y2 - Z;
+//
+//  float3 NVal = texNormal.Sample(colorSampler, input.uv).xyz;
+//  NVal = normalize(NVal * 2 - 1);
+//
+//  int KernelSize = blurRange * 2 + 1;
+//  float Sigma = (2 * pow((KernelSize - 1.0) / 6.0, 2)); // make the kernel span 6 sigma
+//
+//  for (int x = -blurRange; x <= blurRange; x++) {
+//    for (int y = -blurRange; y <= blurRange; y++) {
+//      float KernelWeight = exp(-length(float2(x, y)) / Sigma);
+//      float2 offset = float2(float(x), float(y)) * texelSize;
+//
+//      float ZTmp = texPosition.Sample(colorSampler, input.uv + offset).z;
+//      float ZDeltaApprox = abs(dot(float2(Z_DDX, Z_DDY), float2(x, y)));
+//      float ZDelta = abs(Z - ZTmp);
+//      float ZWeight = exp(-ZDelta / (ZDeltaApprox + 0.001));
+//
+//      float3 NTmp = texNormal.Sample(colorSampler, input.uv + offset).xyz;
+//      NTmp = normalize(NTmp * 2 - 1);
+//      float NormalWeight = pow(max(0, dot(NVal, NTmp)), 128);
+//
+//      ZWeight = 1;
+//      float Weight = ZWeight * NormalWeight;
+//
+//      result += texSSAO.Sample(colorSampler, input.uv + offset).r  KernelWeight  Weight;
+//      TotalWeight += KernelWeight * Weight;
+//    }
+//  }
+//
+//  float outFragColor = result / TotalWeight;
+//  return outFragColor;
+//}

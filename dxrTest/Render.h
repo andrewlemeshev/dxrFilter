@@ -134,6 +134,8 @@ struct Filter {
   uint32_t bilateralInputUAVDescIndex;
   D3D12_GPU_DESCRIPTOR_HANDLE bilateralNormalDesc;
   uint32_t bilateralNormalHeapIndex;
+  D3D12_GPU_DESCRIPTOR_HANDLE bilateralDepthDesc;
+  uint32_t bilateralDepthHeapIndex;
   D3D12_GPU_DESCRIPTOR_HANDLE bilateralPixelDataDesc;
   uint32_t bilateralPixelDataHeapIndex;
 

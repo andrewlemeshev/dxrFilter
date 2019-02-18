@@ -200,6 +200,7 @@ DX12Render::DX12Render() {
   filter.bilateralOutputUAVDescIndex = UINT32_MAX;
   filter.bilateralInputUAVDescIndex = UINT32_MAX;
   filter.bilateralNormalHeapIndex = UINT32_MAX;
+  filter.bilateralDepthHeapIndex = UINT32_MAX;
   filter.bilateralPixelDataHeapIndex = UINT32_MAX;
   filter.pixelAdditionOutputIndex = UINT32_MAX;
   filter.pixelAdditionInputIndex = UINT32_MAX;
@@ -2839,7 +2840,7 @@ void DX12Render::createFilterDescriptorHeap() {
 
   const uint32_t filterBuffers = 1;                        // const buffer
   const uint32_t filterTextures = 1+2+2;                   // output, color, depth, last color, last depth
-  const uint32_t bilateralFilter = 4;                      // output, color, normal, pixelData
+  const uint32_t bilateralFilter = 5;                      // output, color, normal, depth, pixelData
   const uint32_t pixelAdditionFilter = 3;                  // output, color, normal
   const uint32_t descriptorsCount = filterBuffers + filterTextures + bilateralFilter + pixelAdditionFilter;
 
@@ -3131,6 +3132,7 @@ void DX12Render::createBilateralOutputTexture(const uint32_t &width, const uint3
   //createTextureSRV(filter.heap, filter.filterOutput, filterOutputFormat, filter.bilateralInputUAVDescIndex, filter.bilateralInputUAVDesc);
   createTextureSRV(filter.heap, fallback.shadowOutput, shadowOutputFormat, filter.bilateralInputUAVDescIndex, filter.bilateralInputUAVDesc);
   createTextureSRV(filter.heap, gBuffer.normal, normalBufferFormat, filter.bilateralNormalHeapIndex, filter.bilateralNormalDesc);
+  createTextureSRV(filter.heap, gBuffer.depth, DXGI_FORMAT_R32_FLOAT, filter.bilateralNormalHeapIndex, filter.bilateralNormalDesc);
   createTextureSRV(filter.heap, filter.pixelAdditionOutput, pixelAdditionOutputFormat, filter.bilateralPixelDataHeapIndex, filter.bilateralPixelDataDesc);
 }
 
@@ -3143,7 +3145,7 @@ void DX12Render::createBilateralPSO() {
 
   CD3DX12_DESCRIPTOR_RANGE ranges[2];
   ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
-  ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
+  ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0);
 
   CD3DX12_ROOT_PARAMETER rootParameters[2];
   rootParameters[0].InitAsDescriptorTable(1, &ranges[0]);
