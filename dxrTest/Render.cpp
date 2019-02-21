@@ -220,6 +220,8 @@ DX12Render::DX12Render() {
   toneMapping.outputUAVDescIndex = UINT32_MAX;
   toneMapping.filterDescIndex = UINT32_MAX;
 
+  gui.fontDescIndex = UINT32_MAX;
+
   uintRandTextHeapIndex = UINT32_MAX;
 }
 
@@ -753,8 +755,7 @@ void DX12Render::init(HWND hwnd, const uint32_t &width, const uint32_t &height, 
   SAFE_RELEASE(iBufferUploadHeap)
   SAFE_RELEASE(uploadBuffer);
 
-  //createRTResources(width, height);
-  //createFilterResources(width, height);
+  createDefferedPSO();
 }
 
 void DX12Render::initRT(const uint32_t &width, const uint32_t &height, const GPUBuffer<ComputeData> &boxBuffer, const GPUBuffer<ComputeData> &icosahedronBuffer, const GPUBuffer<ComputeData> &coneBuffer) {
@@ -795,229 +796,27 @@ void DX12Render::initFilter(const uint32_t &width, const uint32_t &height) {
   createFilterResources(width, height);
 }
 
+void DX12Render::initImGui() {
+  createGuiDescriptorHeap();
+  createFontTexture();
+  createGuiBuffers();
+  createGuiPSO();
+}
+
+void DX12Render::copyRenderDrawData() {
+
+}
+
 void DX12Render::recreatePSO() {
-  SAFE_RELEASE(pipelineStateObject)
+  deinitPSO();
 
-  HRESULT hr;
-
-  // create root signature
-
-  // create a descriptor range (descriptor table) and fill it out
-  // this is a range of descriptors inside a descriptor heap
-  const D3D12_DESCRIPTOR_RANGE descriptorTableRanges[] = {
-    { // only one range right now
-      D3D12_DESCRIPTOR_RANGE_TYPE_CBV,     // this is a range of constant buffer views (descriptors)
-      1,                                   // we only have one constant buffer, so the range is only 1
-      0,                                   // start index of the shader registers in the range
-      0,                                   // space 0. can usually be zero
-      D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND // this appends the range to the end of the root signature descriptor tables
-    }
-  };
-
-  // create a descriptor table
-  const D3D12_ROOT_DESCRIPTOR_TABLE descriptorTable{
-    _countof(descriptorTableRanges), // we only have one range
-    descriptorTableRanges            // the pointer to the beginning of our ranges array
-  };
-
-  // create a root parameter and fill it out
-  const D3D12_ROOT_PARAMETER rootParameters[] = {
-    { // only one parameter right now
-      D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, // this is a descriptor table
-      descriptorTable,                            // this is our descriptor table for this root parameter
-      D3D12_SHADER_VISIBILITY_VERTEX              // our pixel shader will be the only shader accessing this parameter for now
-    }
-  };
-
-  CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
-  rootSignatureDesc.Init(
-    _countof(rootParameters), 
-    rootParameters, 
-    0, 
-    nullptr, 
-    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-  );
-
-  ID3DBlob* signature;
-  hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr);
-  throwIfFailed(hr, "Failed to serialize root signature");
-
-  if (rootSignature == nullptr) {
-    hr = device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
-    throwIfFailed(hr, "Failed to create root signature");
-  }
-
-  // create vertex and pixel shaders
-
-  // when debugging, we can compile the shader files at runtime.
-  // but for release versions, we can compile the hlsl shaders
-  // with fxc.exe to create .cso files, which contain the shader
-  // bytecode. We can load the .cso files at runtime to get the
-  // shader bytecode, which of course is faster than compiling
-  // them at runtime
-
-#if defined(_DEBUG)
-      // Enable better shader debugging with the graphics debugging tools.
-  UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#else
-  UINT compileFlags = 0;
-#endif
-
-  // compile vertex shader
-  ID3DBlob* vertexShader; // d3d blob for holding vertex shader bytecode
-  ID3DBlob* errorBuff; // a buffer holding the error data if any
-  hr = D3DCompileFromFile(L"default.hlsl",
-    nullptr,
-    nullptr,
-    "vertexMain",
-    "vs_5_0",
-    compileFlags,
-    0,
-    &vertexShader,
-    &errorBuff);
-  if (FAILED(hr)) {
-    OutputDebugStringA((char*)errorBuff->GetBufferPointer());
-    throw std::runtime_error("Vertex shader creation error");
-  }
-
-  // fill out a shader bytecode structure, which is basically just a pointer
-  // to the shader bytecode and the size of the shader bytecode
-  const D3D12_SHADER_BYTECODE vertexShaderBytecode = {
-    vertexShader->GetBufferPointer(),
-    vertexShader->GetBufferSize()
-  };
-
-  // compile pixel shader
-  ID3DBlob* pixelShader;
-  hr = D3DCompileFromFile(L"default.hlsl",
-    nullptr,
-    nullptr,
-    "pixelMain",
-    "ps_5_0",
-    compileFlags,
-    0,
-    &pixelShader,
-    &errorBuff);
-  if (FAILED(hr)) {
-    OutputDebugStringA((char*)errorBuff->GetBufferPointer());
-    throw std::runtime_error("Pixel shader creation error");
-  }
-
-  // fill out shader bytecode structure for pixel shader
-  const D3D12_SHADER_BYTECODE pixelShaderBytecode = {
-    pixelShader->GetBufferPointer(),
-    pixelShader->GetBufferSize()
-  };
-
-  // create input layout
-
-  // The input layout is used by the Input Assembler so that it knows
-  // how to read the vertex data bound to it.
-
-  const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
-    {
-      "POSITION", // semantic name (name of the parameter, the input assembler will associate this attribute to an input with the same semantic name in the shaders)
-      0,          // semantic index (this is only needed if more than one element have the same semantic name)
-      DXGI_FORMAT_R32G32B32A32_FLOAT, // this will define the format this attribute is in (4 floats)
-      0,          // input slot (each vertex buffer is bound to a slot)
-      offsetof(Vertex, pos), // this is the offset in bytes from the beginning of the vertex structure to the start of this attribute
-      D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, // this specifies if this element is per vertex or per instance
-      0           // this is the number of instances to draw before going to the next element
-    },
-    { "NORMAL", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(Vertex, normal), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    { "TEX_COORDS", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(Vertex, texCoords), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-
-    // не следует забывать об этой еденичке на конце!!!
-    { "MODEL_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0*sizeof(glm::vec4), D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-    { "MODEL_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 1*sizeof(glm::vec4), D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-    { "MODEL_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 2*sizeof(glm::vec4), D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-    { "MODEL_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 3*sizeof(glm::vec4), D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 }
-  };
-
-  // fill out an input layout description structure
-  const D3D12_INPUT_LAYOUT_DESC inputLayoutDesc = {
-    inputLayout,
-    // we can get the number of elements in an array by "sizeof(array) / sizeof(arrayElementType)"
-    sizeof(inputLayout) / sizeof(D3D12_INPUT_ELEMENT_DESC)
-  };
-
-  const D3D12_DEPTH_STENCILOP_DESC defaultStencilOp{ // a stencil operation structure, again does not really matter since stencil testing is turned off
-    D3D12_STENCIL_OP_KEEP,       // what the stencil operation should do when a pixel fragment fails the stencil test
-    D3D12_STENCIL_OP_KEEP,       // what the stencil operation should do when the stencil test passes but the depth test fails
-    D3D12_STENCIL_OP_KEEP,       // what the stencil operation should do when stencil and depth tests both pass
-    D3D12_COMPARISON_FUNC_ALWAYS // the function the stencil test should use
-  };
-
-  const D3D12_DEPTH_STENCIL_DESC depthDesc{
-    true,                             // enable depth testing
-    D3D12_DEPTH_WRITE_MASK_ALL,       // can write depth data to all of the depth/stencil buffer
-    D3D12_COMPARISON_FUNC_LESS,       // pixel fragment passes depth test if destination pixel's depth is less than pixel fragment's
-    false,                            // disable stencil test
-    D3D12_DEFAULT_STENCIL_READ_MASK,  // a default stencil read mask (doesn't matter at this point since stencil testing is turned off)
-    D3D12_DEFAULT_STENCIL_WRITE_MASK, // a default stencil write mask (also doesn't matter)
-    defaultStencilOp,                 // both front and back facing polygons get the same treatment 
-    defaultStencilOp
-  };
-
-  // create a pipeline state object (PSO)
-
-  // In a real application, you will have many pso's. for each different shader
-  // or different combinations of shaders, different blend states or different rasterizer states,
-  // different topology types (point, line, triangle, patch), or a different number
-  // of render targets you will need a pso
-
-  // VS is the only required shader for a pso. You might be wondering when a case would be where
-  // you only set the VS. It's possible that you have a pso that only outputs data with the stream
-  // output, and not on a render target, which means you would not need anything after the stream
-  // output.
-
-  const DXGI_SAMPLE_DESC sampleDesc{
-    1,  // multisample count (no multisampling, so we just put 1, since we still need 1 sample)
-    0   // default value
-  };
-
-  const D3D12_RASTERIZER_DESC rasterizer{
-    D3D12_FILL_MODE_SOLID, // D3D12_FILL_MODE_WIREFRAME
-    D3D12_CULL_MODE_BACK,  // CullMode 
-    true,                  // FrontCounterClockwise
-    0,                     // DepthBias
-    0.0f,                  // DepthBiasClamp
-    0.0f,                  // SlopeScaledDepthBias
-    false,                 // DepthClipEnable
-    false,                 // MultisampleEnable
-    false,                 // AntialiasedLineEnable
-    0,                     // ForcedSampleCount
-    D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF // ConservativeRaster
-  };
-
-  D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{
-    rootSignature,          // the root signature that describes the input data this pso needs
-    vertexShaderBytecode,   // structure describing where to find the vertex shader bytecode and how large it is
-    pixelShaderBytecode,    // same as VS but for pixel shader
-    {},                     // D3D12_SHADER_BYTECODE (domain shader)
-    {},                     // D3D12_SHADER_BYTECODE (hull shader)
-    {},                     // D3D12_SHADER_BYTECODE (geometry shader)
-    {},                     // Used to send data from the pipeline (after geometry shader, or after vertex shader if geometry shader is not defined) to your app
-    CD3DX12_BLEND_DESC(D3D12_DEFAULT), // a default rasterizer state
-    0xffffffff,             // sample mask has to do with multi-sampling. 0xffffffff means point sampling is done
-    //CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT), // a default rasterizer state
-    rasterizer,
-    depthDesc,              // This is the state of the depth/stencil buffer
-    inputLayoutDesc,        // the structure describing our input layout
-    D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, // this is used when a triangle strip topology is defined
-    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, // type of topology we are drawing
-    2,                     // render target count
-    {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32G32B32A32_FLOAT}, // format of the render target (8?)
-    DXGI_FORMAT_D32_FLOAT, // explaining the format of each depth/stencil buffer
-    sampleDesc,            // must be the same sample description as the swapchain and depth/stencil buffer
-    0,                     // a bit mask saying which GPU adapter to use
-    {},                    // you can cache PSO's, such as into files, so the next time your initialize the PSO, compilation will happen much much faster
-    D3D12_PIPELINE_STATE_FLAG_NONE // the debug option will give extra information that is helpful when debugging (now off)
-  };
-
-  // create the pso
-  hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineStateObject));
-  throwIfFailed(hr, "Failed to create graphics pipeline");
+  createDefferedPSO();
+  createFilterPSO();
+  createPixelAdditionPSO(); 
+  createBilateralPSO();
+  createLightningPSO();
+  createToneMappingPSO();
+  createGuiPSO();
 }
 
 void DX12Render::prepareRender(const uint32_t &instanceCount, const glm::mat4 &viewMatrix) {
@@ -1197,8 +996,97 @@ void DX12Render::updateSceneData(const glm::vec4 &cameraPos, const glm::mat4 &vi
   sceneConstantBufferPtr->elapsedTime = float(rand());// / float(RAND_MAX);
 }
 
+void DX12Render::renderGui(const glm::uvec2 &winPos, const glm::uvec2 &winSize) {
+  HRESULT hr;
+
+  ImDrawData* draw_data = ImGui::GetDrawData();
+
+  {
+    float L = draw_data->DisplayPos.x;
+    float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
+    float T = draw_data->DisplayPos.y;
+    float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+    const glm::mat4 mvp = glm::mat4(
+      2.0f / (R - L),    0.0f,              0.0f, 0.0f,
+      0.0f,              2.0f / (T - B),    0.0f, 0.0f,
+      0.0f,              0.0f,              0.5f, 0.0f,
+      (R + L) / (L - R), (T + B) / (B - T), 0.5f, 1.0f
+    );
+    memcpy(&gui.matrix, &mvp, sizeof(glm::mat4));
+  }
+
+  if (gui.vertexBufferSize < draw_data->TotalVtxCount) {
+    SAFE_RELEASE(gui.vertices)
+
+    gui.vertexBufferSize = draw_data->TotalVtxCount;
+
+    hr = device->CreateCommittedResource(
+      &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+      D3D12_HEAP_FLAG_NONE,
+      &CD3DX12_RESOURCE_DESC::Buffer(gui.vertexBufferSize* sizeof(ImDrawVert)),
+      D3D12_RESOURCE_STATE_GENERIC_READ,
+      nullptr,
+      IID_PPV_ARGS(&gui.vertices)
+    );
+    throwIfFailed(hr, "Could not create vertex gui buffer");
+    gui.vertices->SetName(L"Vertex gui buffer");
+
+    gui.vertexBufferView = {
+      gui.vertices->GetGPUVirtualAddress(),
+      UINT(gui.vertexBufferSize * sizeof(ImDrawVert)),
+      UINT(sizeof(ImDrawVert))
+    };
+  }
+
+  if (gui.indexBufferSize < draw_data->TotalIdxCount) {
+    SAFE_RELEASE(gui.indices)
+
+    gui.indexBufferSize = draw_data->TotalIdxCount;
+
+    hr = device->CreateCommittedResource(
+      &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+      D3D12_HEAP_FLAG_NONE,
+      &CD3DX12_RESOURCE_DESC::Buffer(gui.indexBufferSize * sizeof(ImDrawIdx)),
+      D3D12_RESOURCE_STATE_GENERIC_READ,
+      nullptr,
+      IID_PPV_ARGS(&gui.indices)
+    );
+    throwIfFailed(hr, "Could not create index gui buffer");
+    gui.indices->SetName(L"Index gui buffer");
+
+    gui.indexBufferView = {
+      gui.indices->GetGPUVirtualAddress(),
+      UINT(gui.indexBufferSize * sizeof(ImDrawIdx)),
+      sizeof(ImDrawIdx) == 2 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT
+    };
+  }
+
+  // Copy and convert all vertices into a single contiguous buffer
+  void* vtx_resource, *idx_resource;
+  D3D12_RANGE range;
+  memset(&range, 0, sizeof(D3D12_RANGE));
+  hr = gui.vertices->Map(0, &range, &vtx_resource);
+  throwIfFailed(hr, "Could not map vertex gui buffer");
+  hr = gui.indices->Map(0, &range, &idx_resource);
+  throwIfFailed(hr, "Could not map index gui buffer");
+
+  ImDrawVert* vtx_dst = (ImDrawVert*)vtx_resource;
+  ImDrawIdx* idx_dst = (ImDrawIdx*)idx_resource;
+  for (int n = 0; n < draw_data->CmdListsCount; ++n) {
+    const ImDrawList* cmd_list = draw_data->CmdLists[n];
+    memcpy(vtx_dst, cmd_list->VtxBuffer.Data, cmd_list->VtxBuffer.Size * sizeof(ImDrawVert));
+    memcpy(idx_dst, cmd_list->IdxBuffer.Data, cmd_list->IdxBuffer.Size * sizeof(ImDrawIdx));
+    vtx_dst += cmd_list->VtxBuffer.Size;
+    idx_dst += cmd_list->IdxBuffer.Size;
+  }
+  gui.vertices->Unmap(0, &range);
+  gui.indices->Unmap(0, &range);
+}
+
 void DX12Render::nextFrame() {
   HRESULT hr;
+
+  //frameIndex = (frameIndex + 1) % frameBufferCount;
 
   // We have to wait for the gpu to finish with the command allocator before we reset it
   //if (!waitForFrame()) {
@@ -1309,40 +1197,7 @@ void DX12Render::rayTracingPart() {
     commandList->ResourceBarrier(_countof(barriers), barriers);
   }
 
-  // не хочет чистить uav ресурс, что делать?
-  /*const float clearColor[] = {0.0f, 0.0f, 0.0f, 1.0f};
-  commandList->ClearUnorderedAccessViewFloat(fallback.outputResourceDescriptors.gpuDescriptorHandle, 
-                                             fallback.outputResourceDescriptors.cpuDescriptorHandle, 
-                                             fallback.raytracingOutput, 
-                                             clearColor, 
-                                             0, nullptr);*/
-
-  //static const auto dispatchRays = [&](auto* commandList, auto* stateObject, auto* dispatchDesc) {
-  //  // Since each shader table has only one shader record, the stride is same as the size.
-  //  dispatchDesc->HitGroupTable.StartAddress = fallback.hitGroupShaderTable->GetGPUVirtualAddress();
-  //  dispatchDesc->HitGroupTable.SizeInBytes = fallback.hitGroupShaderTable->GetDesc().Width;
-  //  dispatchDesc->HitGroupTable.StrideInBytes = fallback.hitGroupShaderTableStrideInBytes;
-  //  //dispatchDesc->HitGroupTable.StrideInBytes = dispatchDesc->HitGroupTable.SizeInBytes;
-  //  dispatchDesc->MissShaderTable.StartAddress = fallback.missShaderTable->GetGPUVirtualAddress();
-  //  dispatchDesc->MissShaderTable.SizeInBytes = fallback.missShaderTable->GetDesc().Width;
-  //  dispatchDesc->MissShaderTable.StrideInBytes = fallback.missShaderTableStrideInBytes;
-  //  //dispatchDesc->MissShaderTable.StrideInBytes = dispatchDesc->MissShaderTable.SizeInBytes;
-  //  dispatchDesc->RayGenerationShaderRecord.StartAddress = fallback.rayGenShaderTable->GetGPUVirtualAddress();
-  //  dispatchDesc->RayGenerationShaderRecord.SizeInBytes = fallback.rayGenShaderTable->GetDesc().Width;
-  //  dispatchDesc->Width = 1280;
-  //  dispatchDesc->Height = 720;
-  //  dispatchDesc->Depth = 1;
-  //  commandList->SetPipelineState1(stateObject);
-  //  commandList->DispatchRays(dispatchDesc);
-  //};
-
   commandList->SetComputeRootSignature(fallback.globalRootSignature);
-
-  /*D3D12_DISPATCH_RAYS_DESC dispatchDesc = {};
-  fallback.commandList->SetDescriptorHeaps(1, &rtHeap);
-  commandList->SetComputeRootDescriptorTable(static_cast<UINT>(GlobalRootSignatureParams::OUTPUT_VIEW_SLOT), fallback.raytracingOutputResourceUAVGpuDescriptor);
-  fallback.commandList->SetTopLevelAccelerationStructure(static_cast<UINT>(GlobalRootSignatureParams::ACCELERATION_STRUCTURE_SLOT), fallback.topLevelAccelerationStructurePointer);
-  dispatchRays(fallback.commandList, fallback.stateObject, &dispatchDesc);*/
 
   // в туториале здесь копируют константные буферы сцены и прочее
   // пока что не буду этого делать
@@ -1385,27 +1240,10 @@ void DX12Render::rayTracingPart() {
   commandList->SetComputeRootDescriptorTable(static_cast<uint32_t>(GlobalRootSignatureParams::RANDOM_TEXTURE), uintRandTextDescriptor);
   commandList->SetComputeRootDescriptorTable(static_cast<uint32_t>(GlobalRootSignatureParams::SHADOW_TEXTURE), fallback.shadowDescriptors.gpuDescriptorHandle);
 
-  //D3D12_DISPATCH_RAYS_DESC dispatchDesc = {};
-  /*fallback.commandList->SetDescriptorHeaps(1, &rtHeap);
-  commandList->SetComputeRootDescriptorTable(static_cast<UINT>(GlobalRootSignatureParams::OUTPUT_VIEW_SLOT), fallback.raytracingOutputResourceUAVGpuDescriptor);
-  fallback.commandList->SetTopLevelAccelerationStructure(static_cast<UINT>(GlobalRootSignatureParams::ACCELERATION_STRUCTURE_SLOT), fallback.topLevelAccelerationStructurePointer);*/
-  //dispatchRays(fallback.commandList, fallback.stateObject, &dispatchDesc);
-
   fallback.commandList->SetPipelineState1(fallback.stateObject);
   fallback.commandList->DispatchRays(&dispatchDesc);
 
   // нам об€зательно нужно сменить лайоут текстурки в которую мы будем писать
-  //{
-  //  const D3D12_RESOURCE_BARRIER barriers[] = {
-  //    CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
-  //    CD3DX12_RESOURCE_BARRIER::Transition(fallback.raytracingOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE)
-  //  };
-
-  //  commandList->ResourceBarrier(_countof(barriers), barriers);
-  //}
-  ////commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST));
-  ////commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(fallback.raytracingOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE));
-  //commandList->CopyResource(renderTargets[frameIndex], fallback.raytracingOutput);
 
   //{
   //  const D3D12_RESOURCE_BARRIER barriers[] = {
@@ -1418,16 +1256,6 @@ void DX12Render::rayTracingPart() {
 
   //  commandList->ResourceBarrier(_countof(barriers), barriers);
   //}
-
-
-  //commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(fallback.raytracingOutput, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
-
-  // после того как нарисуем нам также необходимо обратно помен€ть лайоут текстурки
-  //commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT));
-
-  //commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.color, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET));
-  //commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.normal, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET));
-  //commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.depth, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_DEPTH_WRITE));
 }
 
 void DX12Render::filterPart() {
@@ -1469,7 +1297,8 @@ void DX12Render::filterPart() {
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
       CD3DX12_RESOURCE_BARRIER::UAV(filter.filterOutput),
-      CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ)
+      CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ),
+      CD3DX12_RESOURCE_BARRIER::Transition(filter.pixelAdditionOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     };
 
     commandList->ResourceBarrier(_countof(barriers), barriers);
@@ -1570,7 +1399,8 @@ void DX12Render::filterPart() {
     const D3D12_RESOURCE_BARRIER barriers[] = {
       CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
       //CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-      CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
+      //CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
+      CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET),
       CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.color, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET),
       CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.normal, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET),
       CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.depth, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE),
@@ -1580,6 +1410,73 @@ void DX12Render::filterPart() {
       CD3DX12_RESOURCE_BARRIER::Transition(toneMapping.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.bilateralOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
       CD3DX12_RESOURCE_BARRIER::Transition(lightning.output, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+    };
+
+    commandList->ResourceBarrier(_countof(barriers), barriers);
+  }
+}
+
+void DX12Render::guiPart() {
+  commandList->RSSetViewports(1, &viewport);
+
+  // информаци€ текстурках которые мы будем заполн€ть нормал€ми и цветом
+  //CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(gBuffer.cDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), 0, rtvDescriptorSize);
+  CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(gui.rtvHeap->GetCPUDescriptorHandleForHeapStart(), frameIndex, rtvDescriptorSize);
+  // буфер глубины
+  //CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(gBuffer.dDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
+
+  // true указывает что мы хотим прочитать дескриптор из одного указател€ (то есть они лежат в одном месте друг за другом)
+  commandList->OMSetRenderTargets(1, &rtvHandle, false, nullptr);
+
+  commandList->IASetVertexBuffers(0, 1, &gui.vertexBufferView);
+  commandList->IASetIndexBuffer(&gui.indexBufferView);
+
+  commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+  commandList->SetPipelineState(gui.pso);
+  commandList->SetGraphicsRootSignature(gui.rootSignature);
+  commandList->SetDescriptorHeaps(1, &gui.heap.handle);
+
+  commandList->SetGraphicsRoot32BitConstants(0, sizeof(glm::mat4)/sizeof(float), &gui.matrix, 0);
+
+  // Setup render state
+  const float blendFactor[4] = {0.f, 0.f, 0.f, 0.f};
+  commandList->OMSetBlendFactor(blendFactor);
+
+  ImDrawData* draw_data = ImGui::GetDrawData();
+
+  // Render command lists
+  uint32_t vtx_offset = 0;
+  uint32_t idx_offset = 0;
+  ImVec2 clip_off = draw_data->DisplayPos;
+  for (uint32_t n = 0; n < draw_data->CmdListsCount; ++n) {
+    const ImDrawList* cmd_list = draw_data->CmdLists[n];
+
+    for (uint32_t cmd_i = 0; cmd_i < cmd_list->CmdBuffer.Size; ++cmd_i) {
+      const ImDrawCmd* pcmd = &cmd_list->CmdBuffer[cmd_i];
+
+      if (pcmd->UserCallback) {
+        pcmd->UserCallback(cmd_list, pcmd);
+      } else {
+        const D3D12_RECT r{
+          LONG(pcmd->ClipRect.x - clip_off.x), 
+          LONG(pcmd->ClipRect.y - clip_off.y), 
+          LONG(pcmd->ClipRect.z - clip_off.x), 
+          LONG(pcmd->ClipRect.w - clip_off.y)
+        };
+
+        commandList->SetGraphicsRootDescriptorTable(1, *(D3D12_GPU_DESCRIPTOR_HANDLE*)&pcmd->TextureId);
+        commandList->RSSetScissorRects(1, &r);
+        commandList->DrawIndexedInstanced(pcmd->ElemCount, 1, idx_offset, vtx_offset, 0);
+      }
+      idx_offset += pcmd->ElemCount;
+    }
+    vtx_offset += cmd_list->VtxBuffer.Size;
+  }
+
+  {
+    const D3D12_RESOURCE_BARRIER barriers[] = {
+      CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT),
     };
 
     commandList->ResourceBarrier(_countof(barriers), barriers);
@@ -1677,6 +1574,8 @@ void DX12Render::cleanup() {
     SAFE_RELEASE(fallback.hitGroupShaderTable[i])
   }*/
   SAFE_RELEASE(fallback.rayGenShaderTable)
+
+  deinitPSO();
 
   CloseHandle(fenceEvent);
 }
@@ -1902,6 +1801,690 @@ void DX12Render::loadModels(std::vector<uint32_t> &indices, std::vector<Vertex> 
     lastIndicesCount = indices.size();
     lastVerticesCount = vertices.size();
   }
+}
+
+void DX12Render::deinitPSO() {
+  SAFE_RELEASE(pipelineStateObject)
+  SAFE_RELEASE(rootSignature)
+  SAFE_RELEASE(filter.rootSignature)
+  SAFE_RELEASE(filter.pso)
+  SAFE_RELEASE(filter.pixelAdditionRootSignature)
+  SAFE_RELEASE(filter.pixelAdditionRootSignature)
+  SAFE_RELEASE(filter.bilateralRootSignature)
+  SAFE_RELEASE(filter.bilateralPSO)
+  SAFE_RELEASE(lightning.rootSignature)
+  SAFE_RELEASE(lightning.pso)
+  SAFE_RELEASE(toneMapping.rootSignature)
+  SAFE_RELEASE(toneMapping.pso)
+  SAFE_RELEASE(gui.rootSignature)
+  SAFE_RELEASE(gui.pso)
+}
+
+void DX12Render::createGuiDescriptorHeap() {
+  const uint32_t guiFont = 1;                        // font texture
+  const uint32_t descriptorsCount = guiFont;
+
+  createDescriptorHeap(descriptorsCount, gui.heap, "gui descriptor heap");
+}
+
+void DX12Render::createFontTexture() {
+  HRESULT hr;
+
+  // Build texture atlas
+  ImGuiIO& io = ImGui::GetIO();
+  unsigned char* pixels;
+  int width, height;
+  io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+
+  size_t uploadPitch = (width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
+  size_t uploadSize = height * uploadPitch;
+
+  ID3D12Resource* uploadBuffer = nullptr;
+  hr = device->CreateCommittedResource(
+    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+    D3D12_HEAP_FLAG_NONE,
+    &CD3DX12_RESOURCE_DESC::Buffer(uploadSize),
+    D3D12_RESOURCE_STATE_GENERIC_READ,
+    nullptr,
+    IID_PPV_ARGS(&uploadBuffer)
+  );
+  throwIfFailed(hr, "Could not create upload font texture buffer");
+  uploadBuffer->SetName(L"Upload font texture buffer");
+
+  hr = device->CreateCommittedResource(
+    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+    D3D12_HEAP_FLAG_NONE,
+    &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height),
+    D3D12_RESOURCE_STATE_COPY_DEST,
+    nullptr,
+    IID_PPV_ARGS(&gui.font)
+  );
+  throwIfFailed(hr, "Could not create font texture");
+  gui.font->SetName(L"Font texture");
+
+  void* mapped = nullptr;
+  hr = uploadBuffer->Map(0, nullptr, &mapped);
+  throwIfFailed(hr, "Could not map upload font texture buffer");
+
+  for (uint32_t y = 0; y < height; ++y) {
+    memcpy((void*)(uintptr_t(mapped) + y * uploadPitch), pixels + y * width * 4, width * 4);
+  }
+  uploadBuffer->Unmap(0, nullptr);
+
+  const D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{
+    0,
+    {
+      DXGI_FORMAT_R8G8B8A8_UNORM,
+      width,
+      height,
+      1,
+      uploadPitch
+    }
+  };
+
+  commandList->Reset(commandAllocator[frameIndex], nullptr);
+
+  commandList->CopyTextureRegion(
+    &CD3DX12_TEXTURE_COPY_LOCATION(gui.font, 0),
+    0, 0, 0,
+    &CD3DX12_TEXTURE_COPY_LOCATION(uploadBuffer, footprint),
+    nullptr
+  );
+
+  commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(gui.font, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+
+  hr = commandList->Close();
+  throwIfFailed(hr, "Could not close command list");
+
+  ID3D12CommandList* ppCommandLists[] = {commandList};
+  commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+
+  waitForRenderContext();
+
+  uploadBuffer->Release();
+
+  // Create texture view
+  createTextureSRV(gui.heap, gui.font, DXGI_FORMAT_R8G8B8A8_UNORM, gui.fontDescIndex, gui.fontDesc);
+
+  io.Fonts->TexID = (ImTextureID)gui.fontDesc.ptr;
+
+  const D3D12_DESCRIPTOR_HEAP_DESC gBufferRTVHeapDesc{
+    D3D12_DESCRIPTOR_HEAP_TYPE_RTV,   // we are creating a RTV heap
+    frameBufferCount,                 // number of descriptors for this heap.
+    D3D12_DESCRIPTOR_HEAP_FLAG_NONE,  // this heap is a render target view heap
+    0  // the number of descriptors we will store in this descriptor heap
+  };
+
+  hr = device->CreateDescriptorHeap(&gBufferRTVHeapDesc, IID_PPV_ARGS(&gui.rtvHeap));
+  throwIfFailed(hr, "Could not create GBuffer color descriptor heap");
+
+  const uint32_t gBufferRTVSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+  CD3DX12_CPU_DESCRIPTOR_HANDLE gBufHandle(gui.rtvHeap->GetCPUDescriptorHandleForHeapStart());
+
+  for (uint32_t i = 0; i < frameBufferCount; ++i) {
+    device->CreateRenderTargetView(renderTargets[i], nullptr, gBufHandle);
+    gBufHandle.Offset(1, gBufferRTVSize);
+  }
+}
+
+void DX12Render::createGuiBuffers() {
+  HRESULT hr;
+  const size_t vertexStride = sizeof(ImDrawVert);
+  const size_t indexStride = sizeof(ImDrawIdx);
+  const size_t defaultVertexSize = 500;
+  const size_t defaultIndexSize = 500;
+
+  gui.vertexBufferSize = defaultVertexSize;
+  gui.indexBufferSize = defaultIndexSize;
+
+  hr = device->CreateCommittedResource(
+    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+    D3D12_HEAP_FLAG_NONE,
+    &CD3DX12_RESOURCE_DESC::Buffer(defaultVertexSize*vertexStride),
+    D3D12_RESOURCE_STATE_GENERIC_READ,
+    nullptr,
+    IID_PPV_ARGS(&gui.vertices)
+  );
+  throwIfFailed(hr, "Could not create vertex gui buffer");
+  gui.vertices->SetName(L"Vertex gui buffer");
+
+  hr = device->CreateCommittedResource(
+    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+    D3D12_HEAP_FLAG_NONE,
+    &CD3DX12_RESOURCE_DESC::Buffer(defaultIndexSize*indexStride),
+    D3D12_RESOURCE_STATE_GENERIC_READ,
+    nullptr,
+    IID_PPV_ARGS(&gui.indices)
+  );
+  throwIfFailed(hr, "Could not create index gui buffer");
+  gui.indices->SetName(L"Index gui buffer");
+
+  gui.vertexBufferView = {
+    gui.vertices->GetGPUVirtualAddress(),
+    UINT(gui.vertexBufferSize * vertexStride),
+    UINT(vertexStride)
+  };
+
+  gui.indexBufferView = {
+    gui.indices->GetGPUVirtualAddress(),
+    UINT(gui.indexBufferSize * indexStride),
+    sizeof(ImDrawIdx) == 2 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT
+  };
+}
+
+void DX12Render::createGuiPSO() {
+  HRESULT hr;
+
+  // create root signature
+
+  // create a descriptor range (descriptor table) and fill it out
+  // this is a range of descriptors inside a descriptor heap
+  const D3D12_DESCRIPTOR_RANGE descriptorTableRanges[] = {
+    { // only one range right now
+      D3D12_DESCRIPTOR_RANGE_TYPE_CBV,     // this is a range of constant buffer views (descriptors)
+      1,                                   // we only have one constant buffer, so the range is only 1
+      0,                                   // start index of the shader registers in the range
+      0,                                   // space 0. can usually be zero
+      D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND // this appends the range to the end of the root signature descriptor tables
+    },
+    {
+      D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+      1,
+      0,
+      0,
+      D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND
+    }
+  };
+
+  // create a descriptor table
+  const D3D12_ROOT_DESCRIPTOR_TABLE descriptorTables[] = {
+    {
+      1, // we only have one range
+      &descriptorTableRanges[0]            // the pointer to the beginning of our ranges array
+    },
+    {
+      1, // we only have one range
+      &descriptorTableRanges[1]
+    }
+  };
+
+  // create a root parameter and fill it out
+  //const D3D12_ROOT_PARAMETER rootParameters[] = {
+  //  { // only one parameter right now
+  //    D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+  //    D3D12_ROOT_CONSTANTS{
+  //      0,
+  //      0,
+  //      16
+  //    },
+  //    D3D12_SHADER_VISIBILITY_VERTEX
+  //  },
+  //  {
+  //    D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+  //    descriptorTables[1],
+  //    D3D12_SHADER_VISIBILITY_PIXEL
+  //  }
+  //};
+
+  D3D12_ROOT_PARAMETER param[2] = {};
+  param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  param[0].Constants.ShaderRegister = 0;
+  param[0].Constants.RegisterSpace = 0;
+  param[0].Constants.Num32BitValues = sizeof(glm::mat4) / sizeof(float);
+  param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+  param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  param[1].DescriptorTable.NumDescriptorRanges = 1;
+  param[1].DescriptorTable.pDescriptorRanges = &descriptorTableRanges[1];
+  param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+  const D3D12_STATIC_SAMPLER_DESC staticSampler{
+    D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+    D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+    D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+    D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+    0.0f,
+    0,
+    D3D12_COMPARISON_FUNC_ALWAYS,
+    D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
+    0.0f,
+    0.0f,
+    0,
+    0,
+    D3D12_SHADER_VISIBILITY_PIXEL
+  };
+
+  CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+  rootSignatureDesc.Init(
+    _countof(param),
+    param,
+    1,
+    &staticSampler,
+    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+  );
+
+  ID3DBlob* signature;
+  hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr);
+  throwIfFailed(hr, "Failed to serialize root signature");
+
+  if (gui.rootSignature == nullptr) {
+    hr = device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&gui.rootSignature));
+    throwIfFailed(hr, "Failed to create root signature");
+  }
+
+  // create vertex and pixel shaders
+
+  // when debugging, we can compile the shader files at runtime.
+  // but for release versions, we can compile the hlsl shaders
+  // with fxc.exe to create .cso files, which contain the shader
+  // bytecode. We can load the .cso files at runtime to get the
+  // shader bytecode, which of course is faster than compiling
+  // them at runtime
+
+#if defined(_DEBUG)
+      // Enable better shader debugging with the graphics debugging tools.
+  UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+  UINT compileFlags = 0;
+#endif
+
+  // compile vertex shader
+  ID3DBlob* vertexShader; // d3d blob for holding vertex shader bytecode
+  ID3DBlob* errorBuff; // a buffer holding the error data if any
+  hr = D3DCompileFromFile(L"gui.hlsl",
+    nullptr,
+    nullptr,
+    "vertexMain",
+    "vs_5_0",
+    compileFlags,
+    0,
+    &vertexShader,
+    &errorBuff);
+  if (FAILED(hr)) {
+    OutputDebugStringA((char*)errorBuff->GetBufferPointer());
+    throw std::runtime_error("Vertex shader creation error");
+  }
+
+  // fill out a shader bytecode structure, which is basically just a pointer
+  // to the shader bytecode and the size of the shader bytecode
+  const D3D12_SHADER_BYTECODE vertexShaderBytecode = {
+    vertexShader->GetBufferPointer(),
+    vertexShader->GetBufferSize()
+  };
+
+  // compile pixel shader
+  ID3DBlob* pixelShader;
+  hr = D3DCompileFromFile(L"gui.hlsl",
+    nullptr,
+    nullptr,
+    "pixelMain",
+    "ps_5_0",
+    compileFlags,
+    0,
+    &pixelShader,
+    &errorBuff);
+  if (FAILED(hr)) {
+    OutputDebugStringA((char*)errorBuff->GetBufferPointer());
+    throw std::runtime_error("Pixel shader creation error");
+  }
+
+  // fill out shader bytecode structure for pixel shader
+  const D3D12_SHADER_BYTECODE pixelShaderBytecode = {
+    pixelShader->GetBufferPointer(),
+    pixelShader->GetBufferSize()
+  };
+
+  // create input layout
+
+  // The input layout is used by the Input Assembler so that it knows
+  // how to read the vertex data bound to it.
+
+  const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+    {
+      "POSITION", // semantic name (name of the parameter, the input assembler will associate this attribute to an input with the same semantic name in the shaders)
+      0,          // semantic index (this is only needed if more than one element have the same semantic name)
+      DXGI_FORMAT_R32G32_FLOAT, // this will define the format this attribute is in (4 floats)
+      0,          // input slot (each vertex buffer is bound to a slot)
+      offsetof(ImDrawVert, pos), // this is the offset in bytes from the beginning of the vertex structure to the start of this attribute
+      D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, // this specifies if this element is per vertex or per instance
+      0           // this is the number of instances to draw before going to the next element
+    },
+    { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(ImDrawVert, uv), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, offsetof(ImDrawVert, col), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+  };
+
+  // fill out an input layout description structure
+  const D3D12_INPUT_LAYOUT_DESC inputLayoutDesc = {
+    inputLayout,
+    // we can get the number of elements in an array by "sizeof(array) / sizeof(arrayElementType)"
+    sizeof(inputLayout) / sizeof(D3D12_INPUT_ELEMENT_DESC)
+  };
+
+  const D3D12_DEPTH_STENCILOP_DESC defaultStencilOp{ // a stencil operation structure, again does not really matter since stencil testing is turned off
+    D3D12_STENCIL_OP_KEEP,       // what the stencil operation should do when a pixel fragment fails the stencil test
+    D3D12_STENCIL_OP_KEEP,       // what the stencil operation should do when the stencil test passes but the depth test fails
+    D3D12_STENCIL_OP_KEEP,       // what the stencil operation should do when stencil and depth tests both pass
+    D3D12_COMPARISON_FUNC_ALWAYS // the function the stencil test should use
+  };
+
+  const D3D12_DEPTH_STENCIL_DESC depthDesc{
+    false,                            // enable depth testing
+    D3D12_DEPTH_WRITE_MASK_ALL,       // can write depth data to all of the depth/stencil buffer
+    D3D12_COMPARISON_FUNC_LESS,       // pixel fragment passes depth test if destination pixel's depth is less than pixel fragment's
+    false,                            // disable stencil test
+    D3D12_DEFAULT_STENCIL_READ_MASK,  // a default stencil read mask (doesn't matter at this point since stencil testing is turned off)
+    D3D12_DEFAULT_STENCIL_WRITE_MASK, // a default stencil write mask (also doesn't matter)
+    defaultStencilOp,                 // both front and back facing polygons get the same treatment 
+    defaultStencilOp
+  };
+
+  // create a pipeline state object (PSO)
+
+  // In a real application, you will have many pso's. for each different shader
+  // or different combinations of shaders, different blend states or different rasterizer states,
+  // different topology types (point, line, triangle, patch), or a different number
+  // of render targets you will need a pso
+
+  // VS is the only required shader for a pso. You might be wondering when a case would be where
+  // you only set the VS. It's possible that you have a pso that only outputs data with the stream
+  // output, and not on a render target, which means you would not need anything after the stream
+  // output.
+
+  const DXGI_SAMPLE_DESC sampleDesc{
+    1,  // multisample count (no multisampling, so we just put 1, since we still need 1 sample)
+    0   // default value
+  };
+
+  const D3D12_RASTERIZER_DESC rasterizer{
+    D3D12_FILL_MODE_SOLID, // D3D12_FILL_MODE_WIREFRAME
+    D3D12_CULL_MODE_NONE,  // CullMode 
+    true,                  // FrontCounterClockwise
+    0,                     // DepthBias
+    0.0f,                  // DepthBiasClamp
+    0.0f,                  // SlopeScaledDepthBias
+    false,                 // DepthClipEnable
+    false,                 // MultisampleEnable
+    false,                 // AntialiasedLineEnable
+    0,                     // ForcedSampleCount
+    D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF // ConservativeRaster
+  };
+
+  const D3D12_BLEND_DESC blend{
+    false,
+    false,
+    {
+      true,
+      false,
+      D3D12_BLEND_SRC_ALPHA,
+      D3D12_BLEND_INV_SRC_ALPHA,
+      D3D12_BLEND_OP_ADD,
+      D3D12_BLEND_INV_SRC_ALPHA,
+      D3D12_BLEND_ZERO,
+      D3D12_BLEND_OP_ADD,
+      D3D12_LOGIC_OP_COPY,
+      D3D12_COLOR_WRITE_ENABLE_ALL
+    }
+  };
+
+  const D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{
+    gui.rootSignature,      // the root signature that describes the input data this pso needs
+    vertexShaderBytecode,   // structure describing where to find the vertex shader bytecode and how large it is
+    pixelShaderBytecode,    // same as VS but for pixel shader
+    {},                     // D3D12_SHADER_BYTECODE (domain shader)
+    {},                     // D3D12_SHADER_BYTECODE (hull shader)
+    {},                     // D3D12_SHADER_BYTECODE (geometry shader)
+    {},                     // Used to send data from the pipeline (after geometry shader, or after vertex shader if geometry shader is not defined) to your app
+    //CD3DX12_BLEND_DESC(D3D12_DEFAULT), // a default rasterizer state
+    blend,
+    0xffffffff,             // sample mask has to do with multi-sampling. 0xffffffff means point sampling is done
+    //CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT), // a default rasterizer state
+    rasterizer,
+    depthDesc,              // This is the state of the depth/stencil buffer
+    inputLayoutDesc,        // the structure describing our input layout
+    D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, // this is used when a triangle strip topology is defined
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, // type of topology we are drawing
+    1,                     // render target count
+    {DXGI_FORMAT_R8G8B8A8_UNORM}, // format of the render target (8?)
+    DXGI_FORMAT_D32_FLOAT, // explaining the format of each depth/stencil buffer
+    sampleDesc,            // must be the same sample description as the swapchain and depth/stencil buffer
+    0,                     // a bit mask saying which GPU adapter to use
+    {},                    // you can cache PSO's, such as into files, so the next time your initialize the PSO, compilation will happen much much faster
+    D3D12_PIPELINE_STATE_FLAG_NONE // the debug option will give extra information that is helpful when debugging (now off)
+  };
+
+  // create the pso
+  hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&gui.pso));
+  throwIfFailed(hr, "Failed to create graphics pipeline");
+
+  vertexShader->Release();
+  pixelShader->Release();
+}
+
+void DX12Render::createDefferedPSO() {
+  HRESULT hr;
+
+  // create root signature
+
+  // create a descriptor range (descriptor table) and fill it out
+  // this is a range of descriptors inside a descriptor heap
+  const D3D12_DESCRIPTOR_RANGE descriptorTableRanges[] = {
+    { // only one range right now
+      D3D12_DESCRIPTOR_RANGE_TYPE_CBV,     // this is a range of constant buffer views (descriptors)
+      1,                                   // we only have one constant buffer, so the range is only 1
+      0,                                   // start index of the shader registers in the range
+      0,                                   // space 0. can usually be zero
+      D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND // this appends the range to the end of the root signature descriptor tables
+    }
+  };
+
+  // create a descriptor table
+  const D3D12_ROOT_DESCRIPTOR_TABLE descriptorTable{
+    _countof(descriptorTableRanges), // we only have one range
+    descriptorTableRanges            // the pointer to the beginning of our ranges array
+  };
+
+  // create a root parameter and fill it out
+  const D3D12_ROOT_PARAMETER rootParameters[] = {
+    { // only one parameter right now
+      D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, // this is a descriptor table
+      descriptorTable,                            // this is our descriptor table for this root parameter
+      D3D12_SHADER_VISIBILITY_VERTEX              // our pixel shader will be the only shader accessing this parameter for now
+    }
+  };
+
+  CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+  rootSignatureDesc.Init(
+    _countof(rootParameters),
+    rootParameters,
+    0,
+    nullptr,
+    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+  );
+
+  ID3DBlob* signature;
+  hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr);
+  throwIfFailed(hr, "Failed to serialize root signature");
+
+  if (rootSignature == nullptr) {
+    hr = device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
+    throwIfFailed(hr, "Failed to create root signature");
+  }
+
+  // create vertex and pixel shaders
+
+  // when debugging, we can compile the shader files at runtime.
+  // but for release versions, we can compile the hlsl shaders
+  // with fxc.exe to create .cso files, which contain the shader
+  // bytecode. We can load the .cso files at runtime to get the
+  // shader bytecode, which of course is faster than compiling
+  // them at runtime
+
+#if defined(_DEBUG)
+      // Enable better shader debugging with the graphics debugging tools.
+  UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+  UINT compileFlags = 0;
+#endif
+
+  // compile vertex shader
+  ID3DBlob* vertexShader; // d3d blob for holding vertex shader bytecode
+  ID3DBlob* errorBuff; // a buffer holding the error data if any
+  hr = D3DCompileFromFile(L"default.hlsl",
+    nullptr,
+    nullptr,
+    "vertexMain",
+    "vs_5_0",
+    compileFlags,
+    0,
+    &vertexShader,
+    &errorBuff);
+  if (FAILED(hr)) {
+    OutputDebugStringA((char*)errorBuff->GetBufferPointer());
+    throw std::runtime_error("Vertex shader creation error");
+  }
+
+  // fill out a shader bytecode structure, which is basically just a pointer
+  // to the shader bytecode and the size of the shader bytecode
+  const D3D12_SHADER_BYTECODE vertexShaderBytecode = {
+    vertexShader->GetBufferPointer(),
+    vertexShader->GetBufferSize()
+  };
+
+  // compile pixel shader
+  ID3DBlob* pixelShader;
+  hr = D3DCompileFromFile(L"default.hlsl",
+    nullptr,
+    nullptr,
+    "pixelMain",
+    "ps_5_0",
+    compileFlags,
+    0,
+    &pixelShader,
+    &errorBuff);
+  if (FAILED(hr)) {
+    OutputDebugStringA((char*)errorBuff->GetBufferPointer());
+    throw std::runtime_error("Pixel shader creation error");
+  }
+
+  // fill out shader bytecode structure for pixel shader
+  const D3D12_SHADER_BYTECODE pixelShaderBytecode = {
+    pixelShader->GetBufferPointer(),
+    pixelShader->GetBufferSize()
+  };
+
+  // create input layout
+
+  // The input layout is used by the Input Assembler so that it knows
+  // how to read the vertex data bound to it.
+
+  const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+    {
+      "POSITION", // semantic name (name of the parameter, the input assembler will associate this attribute to an input with the same semantic name in the shaders)
+      0,          // semantic index (this is only needed if more than one element have the same semantic name)
+      DXGI_FORMAT_R32G32B32A32_FLOAT, // this will define the format this attribute is in (4 floats)
+      0,          // input slot (each vertex buffer is bound to a slot)
+      offsetof(Vertex, pos), // this is the offset in bytes from the beginning of the vertex structure to the start of this attribute
+      D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, // this specifies if this element is per vertex or per instance
+      0           // this is the number of instances to draw before going to the next element
+    },
+    { "NORMAL", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(Vertex, normal), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "TEX_COORDS", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(Vertex, texCoords), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+
+    // не следует забывать об этой еденичке на конце!!!
+    { "MODEL_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0 * sizeof(glm::vec4), D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    { "MODEL_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 1 * sizeof(glm::vec4), D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    { "MODEL_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 2 * sizeof(glm::vec4), D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    { "MODEL_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 3 * sizeof(glm::vec4), D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 }
+  };
+
+  // fill out an input layout description structure
+  const D3D12_INPUT_LAYOUT_DESC inputLayoutDesc = {
+    inputLayout,
+    // we can get the number of elements in an array by "sizeof(array) / sizeof(arrayElementType)"
+    sizeof(inputLayout) / sizeof(D3D12_INPUT_ELEMENT_DESC)
+  };
+
+  const D3D12_DEPTH_STENCILOP_DESC defaultStencilOp{ // a stencil operation structure, again does not really matter since stencil testing is turned off
+    D3D12_STENCIL_OP_KEEP,       // what the stencil operation should do when a pixel fragment fails the stencil test
+    D3D12_STENCIL_OP_KEEP,       // what the stencil operation should do when the stencil test passes but the depth test fails
+    D3D12_STENCIL_OP_KEEP,       // what the stencil operation should do when stencil and depth tests both pass
+    D3D12_COMPARISON_FUNC_ALWAYS // the function the stencil test should use
+  };
+
+  const D3D12_DEPTH_STENCIL_DESC depthDesc{
+    true,                             // enable depth testing
+    D3D12_DEPTH_WRITE_MASK_ALL,       // can write depth data to all of the depth/stencil buffer
+    D3D12_COMPARISON_FUNC_LESS,       // pixel fragment passes depth test if destination pixel's depth is less than pixel fragment's
+    false,                            // disable stencil test
+    D3D12_DEFAULT_STENCIL_READ_MASK,  // a default stencil read mask (doesn't matter at this point since stencil testing is turned off)
+    D3D12_DEFAULT_STENCIL_WRITE_MASK, // a default stencil write mask (also doesn't matter)
+    defaultStencilOp,                 // both front and back facing polygons get the same treatment 
+    defaultStencilOp
+  };
+
+  // create a pipeline state object (PSO)
+
+  // In a real application, you will have many pso's. for each different shader
+  // or different combinations of shaders, different blend states or different rasterizer states,
+  // different topology types (point, line, triangle, patch), or a different number
+  // of render targets you will need a pso
+
+  // VS is the only required shader for a pso. You might be wondering when a case would be where
+  // you only set the VS. It's possible that you have a pso that only outputs data with the stream
+  // output, and not on a render target, which means you would not need anything after the stream
+  // output.
+
+  const DXGI_SAMPLE_DESC sampleDesc{
+    1,  // multisample count (no multisampling, so we just put 1, since we still need 1 sample)
+    0   // default value
+  };
+
+  const D3D12_RASTERIZER_DESC rasterizer{
+    D3D12_FILL_MODE_SOLID, // D3D12_FILL_MODE_WIREFRAME
+    D3D12_CULL_MODE_BACK,  // CullMode 
+    true,                  // FrontCounterClockwise
+    0,                     // DepthBias
+    0.0f,                  // DepthBiasClamp
+    0.0f,                  // SlopeScaledDepthBias
+    false,                 // DepthClipEnable
+    false,                 // MultisampleEnable
+    false,                 // AntialiasedLineEnable
+    0,                     // ForcedSampleCount
+    D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF // ConservativeRaster
+  };
+
+  const D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{
+    rootSignature,          // the root signature that describes the input data this pso needs
+    vertexShaderBytecode,   // structure describing where to find the vertex shader bytecode and how large it is
+    pixelShaderBytecode,    // same as VS but for pixel shader
+    {},                     // D3D12_SHADER_BYTECODE (domain shader)
+    {},                     // D3D12_SHADER_BYTECODE (hull shader)
+    {},                     // D3D12_SHADER_BYTECODE (geometry shader)
+    {},                     // Used to send data from the pipeline (after geometry shader, or after vertex shader if geometry shader is not defined) to your app
+    CD3DX12_BLEND_DESC(D3D12_DEFAULT), // a default rasterizer state
+    0xffffffff,             // sample mask has to do with multi-sampling. 0xffffffff means point sampling is done
+    //CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT), // a default rasterizer state
+    rasterizer,
+    depthDesc,              // This is the state of the depth/stencil buffer
+    inputLayoutDesc,        // the structure describing our input layout
+    D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, // this is used when a triangle strip topology is defined
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, // type of topology we are drawing
+    2,                     // render target count
+    {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32G32B32A32_FLOAT}, // format of the render target (8?)
+    DXGI_FORMAT_D32_FLOAT, // explaining the format of each depth/stencil buffer
+    sampleDesc,            // must be the same sample description as the swapchain and depth/stencil buffer
+    0,                     // a bit mask saying which GPU adapter to use
+    {},                    // you can cache PSO's, such as into files, so the next time your initialize the PSO, compilation will happen much much faster
+    D3D12_PIPELINE_STATE_FLAG_NONE // the debug option will give extra information that is helpful when debugging (now off)
+  };
+
+  // create the pso
+  hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineStateObject));
+  throwIfFailed(hr, "Failed to create graphics pipeline");
+
+  vertexShader->Release();
+  pixelShader->Release();
 }
 
 //void DX12Render::createRTResources(const uint32_t &width, const uint32_t &height) {
@@ -2844,7 +3427,7 @@ void DX12Render::createFilterDescriptorHeap() {
   const uint32_t pixelAdditionFilter = 3;                  // output, color, normal
   const uint32_t descriptorsCount = filterBuffers + filterTextures + bilateralFilter + pixelAdditionFilter;
 
-  createDescriptorHeap(descriptorsCount, filter.heap);
+  createDescriptorHeap(descriptorsCount, filter.heap, "filter descriptor heap");
 }
 
 void DX12Render::createFilterOutputTexture(const uint32_t &width, const uint32_t &height) {
@@ -3012,7 +3595,7 @@ void DX12Render::createFilterPSO() {
     D3D12_ROOT_SIGNATURE_FLAG_NONE
   );
 
-  ID3DBlob* signature;
+  ID3DBlob* signature = nullptr;
   hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr);
   throwIfFailed(hr, "Failed to serialize root signature");
 
@@ -3020,6 +3603,8 @@ void DX12Render::createFilterPSO() {
     hr = device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&filter.rootSignature));
     throwIfFailed(hr, "Failed to create root signature");
   }
+
+  SAFE_RELEASE(signature)
 
 #if defined(_DEBUG)
   // Enable better shader debugging with the graphics debugging tools.
@@ -3029,8 +3614,8 @@ void DX12Render::createFilterPSO() {
 #endif
 
   // compile vertex shader
-  ID3DBlob* computeShader; // d3d blob for holding vertex shader bytecode
-  ID3DBlob* errorBuff; // a buffer holding the error data if any
+  ID3DBlob* computeShader = nullptr; // d3d blob for holding vertex shader bytecode
+  ID3DBlob* errorBuff = nullptr; // a buffer holding the error data if any
   hr = D3DCompileFromFile(
     L"reproj.hlsl",
     nullptr,
@@ -3069,8 +3654,8 @@ void DX12Render::createFilterPSO() {
   hr = device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&filter.pso));
   throwIfFailed(hr, "Failed to create compute shader");
 
-  //SAFE_RELEASE(computeShader)
-  //SAFE_RELEASE(errorBuff)
+  SAFE_RELEASE(computeShader)
+  SAFE_RELEASE(errorBuff)
 }
 
 void DX12Render::createPixelAdditionOutputTexture(const uint32_t &width, const uint32_t &height) {
@@ -3174,7 +3759,7 @@ void DX12Render::createLightningDescriptorHeap() {
   const uint32_t filterTextures = 1 + 1 + 1 + 1 + 1;       // output, color, depth, normal, shadow
   const uint32_t descriptorsCount = filterBuffers + filterTextures;
 
-  createDescriptorHeap(descriptorsCount, lightning.heap);
+  createDescriptorHeap(descriptorsCount, lightning.heap, "lightning descriptor heap");
 }
 
 void DX12Render::createLightningOutputTexture(const uint32_t &width, const uint32_t &height) {
@@ -3235,7 +3820,7 @@ void DX12Render::createToneMappingDescriptorHeap() {
   const uint32_t filterTextures = 1 + 1;                     // output, color
   const uint32_t descriptorsCount = filterTextures;
 
-  createDescriptorHeap(descriptorsCount, toneMapping.heap);
+  createDescriptorHeap(descriptorsCount, toneMapping.heap, "tone mapping descriptor heap");
 }
 
 void DX12Render::createToneMappingOutputTexture(const uint32_t &width, const uint32_t &height) {
@@ -3774,7 +4359,7 @@ void DX12Render::createUAVTexture(const TextureUAVCreateInfo &info) {
   *info.descriptor = CD3DX12_GPU_DESCRIPTOR_HANDLE(info.heap->handle->GetGPUDescriptorHandleForHeapStart(), *info.heapIndex, info.heap->hardwareSize);*/
 }
 
-void DX12Render::createDescriptorHeap(const uint32_t &descriptorCount, DescriptorHeap &heap) {
+void DX12Render::createDescriptorHeap(const uint32_t &descriptorCount, DescriptorHeap &heap, const std::string &name) {
   HRESULT hr;
 
   const D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {
@@ -3785,8 +4370,8 @@ void DX12Render::createDescriptorHeap(const uint32_t &descriptorCount, Descripto
   };
 
   hr = device->CreateDescriptorHeap(&descriptorHeapDesc, IID_PPV_ARGS(&heap.handle));
-  throwIfFailed(hr, "Could not create descriptor heap for filter");
-  heap.handle->SetName(L"descriptor heap for filter");
+  throwIfFailed(hr, "Could not create " + name);
+  heap.handle->SetName(std::wstring(name.begin(), name.end()).c_str());
 
   heap.hardwareSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   heap.allocatedCount = 0;
@@ -3812,6 +4397,8 @@ void DX12Render::createComputeShader(const CPCreateInfo &info) {
     hr = device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(info.rootSignature));
     throwIfFailed(hr, "Failed to create root signature");
   }
+
+  SAFE_RELEASE(signature)
 
 #if defined(_DEBUG)
   // Enable better shader debugging with the graphics debugging tools.
@@ -3860,4 +4447,7 @@ void DX12Render::createComputeShader(const CPCreateInfo &info) {
 
   hr = device->CreateComputePipelineState(&desc, IID_PPV_ARGS(info.PSO));
   throwIfFailed(hr, "Failed to create bilateral pso");
+
+  SAFE_RELEASE(computeShader)
+  SAFE_RELEASE(errorBuff)
 }

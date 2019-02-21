@@ -29,6 +29,10 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
   //if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) glfwSetWindowShouldClose(window, GLFW_TRUE); 
 }
 
+void mouse_callback(GLFWwindow* window, int button, int action, int mods) {
+  keysState[button] = action != GLFW_RELEASE;
+}
+
 Window::Window() {
   throwIf(!glfwInit(), "Could not init glfw");
 
@@ -106,6 +110,7 @@ void Window::init(HINSTANCE hInstance, const int showWnd, const uint32_t &width,
   size.y = info.rcWindow.top;
 
   glfwSetKeyCallback(window, key_callback);
+  glfwSetMouseButtonCallback(window, mouse_callback);
 }
 
 void Window::resize(const uint32_t &width, const uint32_t &height) {

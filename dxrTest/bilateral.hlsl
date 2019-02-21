@@ -105,6 +105,7 @@ void main(uint3 DTid : SV_DispatchThreadID) {
   //const uint newDiameter = uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(l - coef), 0.2f);
   //const uint newDiameter = uint(coef > 0.07f && coef < 0.93f) * diameter * (dist == 0.0f ? abs(1.0f - coef) : min(dist, 1.0f));
   //const uint newDiameter = uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
+  //const uint newDiameter = uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
 
   const uint kernelSize = radius * 2 + 1;
   const float sigma = (2 * pow((kernelSize - 1.0) / 6.0, 2)); // make the kernel span 6 sigma

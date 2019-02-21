@@ -21,6 +21,8 @@
 #include "Shared.h"
 #include "Buffer.h"
 
+#include "imgui/imgui.h"
+
 class CD3D12_STATE_OBJECT_DESC;
 
 const uint32_t raysTypeCount = 2;
@@ -193,6 +195,28 @@ struct ToneMapping {
   ID3D12PipelineState* pso;
 };
 
+struct Gui {
+  ID3D12Resource* font;
+  D3D12_GPU_DESCRIPTOR_HANDLE fontDesc;
+  uint32_t fontDescIndex;
+
+  ID3D12Resource* vertices;
+  ID3D12Resource* indices;
+  size_t vertexBufferSize;
+  size_t indexBufferSize;
+  D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
+  D3D12_INDEX_BUFFER_VIEW indexBufferView;
+
+  ID3D12DescriptorHeap* rtvHeap;
+
+  glm::mat4 matrix;
+
+  DescriptorHeap heap;
+
+  ID3D12RootSignature* rootSignature;
+  ID3D12PipelineState* pso;
+};
+
 enum class GlobalRootSignatureParams : uint32_t {
   OUTPUT_VIEW_SLOT = 0,
   ACCELERATION_STRUCTURE_SLOT,
@@ -242,6 +266,10 @@ public:
   void initRT(const uint32_t &width, const uint32_t &height, const GPUBuffer<ComputeData> &boxBuffer, const GPUBuffer<ComputeData> &icosahedronBuffer, const GPUBuffer<ComputeData> &coneBuffer);
   void initFilter(const uint32_t &width, const uint32_t &height);
 
+  void initImGui();
+
+  void copyRenderDrawData();
+
   // тут нужно еще создать псо (так чтобы его легко можно было пересоздавать)
   void recreatePSO();
   // еще пересоздать буферы, например инстансный, и обновить view матрицу
@@ -251,11 +279,14 @@ public:
 
   void updateSceneData(const glm::vec4 &cameraPos, const glm::mat4 &viewProj);
 
+  void renderGui(const glm::uvec2 &winPos, const glm::uvec2 &winSize);
+
   void nextFrame();
   void computePart();
   void gBufferPart(const uint32_t &boxCount, const uint32_t &icosahedronCount, const uint32_t &coneCount);
   void rayTracingPart();
   void filterPart();
+  void guiPart();
   void endFrame();
 
   void cleanup();
@@ -350,7 +381,18 @@ private:
   DXGI_FORMAT lightningOutputFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
   LightningCalculation lightning;
 
+  Gui gui;
+
   void loadModels(std::vector<uint32_t> &indices, std::vector<Vertex> &vertices);
+
+  void deinitPSO();
+
+  void createGuiDescriptorHeap();
+  void createFontTexture();
+  void createGuiBuffers();
+  void createGuiPSO();
+
+  void createDefferedPSO();
 
   //void createRTResources(const uint32_t &width, const uint32_t &height);
   void createRayTracingFallbackDevice();
@@ -429,7 +471,7 @@ private:
   };
 
   void createUAVTexture(const TextureUAVCreateInfo &info);
-  void createDescriptorHeap(const uint32_t &descriptorCount, DescriptorHeap &heap);
+  void createDescriptorHeap(const uint32_t &descriptorCount, DescriptorHeap &heap, const std::string &name);
   void createComputeShader(const CPCreateInfo &info);
 };
 
