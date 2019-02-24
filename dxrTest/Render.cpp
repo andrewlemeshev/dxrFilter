@@ -177,6 +177,13 @@ bool getHardwareAdapter(IDXGIFactory4 *factory, IDXGIAdapter1 **adapter) {
   return true;
 }
 
+void TimeProfiler::timeStamp(ID3D12GraphicsCommandList* cmdList) {
+  throwIf(currentQuery >= queryCount, "You need to create more queries");
+
+  cmdList->EndQuery(queryHeap, D3D12_QUERY_TYPE_TIMESTAMP, currentQuery);
+  ++currentQuery;
+}
+
 DX12Render::DX12Render() {
   rayGenCB.viewport = {-1.0f, -1.0f, 1.0f, 1.0f};
   planeMaterialCB.albedo = glm::vec4(0.9f, 0.9f, 0.9f, 1.0f);
@@ -277,6 +284,8 @@ void DX12Render::init(HWND hwnd, const uint32_t &width, const uint32_t &height, 
 
   hr = device->CreateCommandQueue(&cqDesc, IID_PPV_ARGS(&commandQueue));  // create the command queue
   throwIfFailed(hr, "Failed to create CommandQueue");
+  commandQueue->GetTimestampFrequency(&perfomance.frequency);
+
 
   // -- Create the Swap Chain (double/tripple buffering) -- //
 
@@ -756,6 +765,7 @@ void DX12Render::init(HWND hwnd, const uint32_t &width, const uint32_t &height, 
   SAFE_RELEASE(uploadBuffer);
 
   createDefferedPSO();
+  createPerformanceProfiler();
 }
 
 void DX12Render::initRT(const uint32_t &width, const uint32_t &height, const GPUBuffer<ComputeData> &boxBuffer, const GPUBuffer<ComputeData> &icosahedronBuffer, const GPUBuffer<ComputeData> &coneBuffer) {
@@ -1108,7 +1118,7 @@ void DX12Render::computePart() {
 
 // тут мне скорее всего нужно количество объектов разного типа
 void DX12Render::gBufferPart(const uint32_t &boxCount, const uint32_t &icosahedronCount, const uint32_t &coneCount) {
-  //HRESULT hr;
+  perfomance.timeStamp(commandList);
 
   // начинаем записывать команды к исполнению (ничего не требуется дополнительно)
   commandList->RSSetViewports(1, &viewport);
@@ -1186,6 +1196,8 @@ void DX12Render::rayTracingPart() {
   //commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.color, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_GENERIC_READ));
   //commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.normal, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_GENERIC_READ));
   //commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.depth, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_GENERIC_READ));
+
+  perfomance.timeStamp(commandList);
 
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
@@ -1268,6 +1280,8 @@ void DX12Render::filterPart() {
   // projToPrevProj() - необходимо получить координаты пикселя на предыдущем кадре 
   // а это значит что нужно еще хранить предыдущий viewProj (ну и текущий инвертированный видимо)
 
+  perfomance.timeStamp(commandList);
+
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
       CD3DX12_RESOURCE_BARRIER::UAV(fallback.raytracingOutput),
@@ -1293,6 +1307,7 @@ void DX12Render::filterPart() {
   const uint32_t dispatchY = glm::ceil(float(720)  / float(LOCAL_WORK_GROUP));
   commandList->Dispatch(dispatchX, dispatchY, 1);
 
+  perfomance.timeStamp(commandList);
 
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
@@ -1315,6 +1330,8 @@ void DX12Render::filterPart() {
 
   commandList->Dispatch(1280, 720, 1);
 
+  perfomance.timeStamp(commandList);
+
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
       CD3DX12_RESOURCE_BARRIER::UAV(filter.pixelAdditionOutput),
@@ -1334,6 +1351,8 @@ void DX12Render::filterPart() {
   commandList->SetPipelineState(filter.bilateralPSO);
 
   commandList->Dispatch(1280, 720, 1);
+
+  perfomance.timeStamp(commandList);
 
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
@@ -1356,6 +1375,8 @@ void DX12Render::filterPart() {
 
   commandList->Dispatch(dispatchX, dispatchY, 1);
 
+  perfomance.timeStamp(commandList);
+
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
       CD3DX12_RESOURCE_BARRIER::UAV(lightning.output),
@@ -1375,6 +1396,8 @@ void DX12Render::filterPart() {
   commandList->SetPipelineState(toneMapping.pso);
 
   commandList->Dispatch(dispatchX, dispatchY, 1);
+
+  perfomance.timeStamp(commandList);
 
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
@@ -1417,6 +1440,8 @@ void DX12Render::filterPart() {
 }
 
 void DX12Render::guiPart() {
+  perfomance.timeStamp(commandList);
+
   commandList->RSSetViewports(1, &viewport);
 
   // информация текстурках которые мы будем заполнять нормалями и цветом
@@ -1485,6 +1510,10 @@ void DX12Render::guiPart() {
 
 void DX12Render::endFrame() {
   HRESULT hr;
+
+  perfomance.timeStamp(commandList);
+
+  resolveQuery();
 
   hr = commandList->Close();
   throwIfFailed(hr, "Command list closing failed");
@@ -1668,6 +1697,18 @@ ID3D12Device* DX12Render::getDevice() const {
   return device;
 }
 
+ID3D12Resource* DX12Render::getTimeStampResource() const {
+  return perfomance.buffer;
+}
+
+size_t DX12Render::getTimeStampCount() const {
+  return perfomance.queryCount;
+}
+
+uint64_t DX12Render::getTimeStampFrequency() const {
+  return perfomance.frequency;
+}
+
 void load(std::string &path, std::vector<uint32_t> &indices, std::vector<Vertex> &vertices) {
   std::string warn;
   std::string err;
@@ -1729,6 +1770,13 @@ void load(std::string &path, std::vector<uint32_t> &indices, std::vector<Vertex>
       shapes[s].mesh.material_ids[f];
     }
   }
+}
+
+void DX12Render::resolveQuery() {
+  //commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(perfomance.buffer, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST));
+  commandList->ResolveQueryData(perfomance.queryHeap, D3D12_QUERY_TYPE_TIMESTAMP, 0, perfomance.queryCount, perfomance.buffer, 0);
+  //commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(perfomance.buffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ));
+  perfomance.currentQuery = 0;
 }
 
 void DX12Render::loadModels(std::vector<uint32_t> &indices, std::vector<Vertex> &vertices) {
@@ -2259,6 +2307,35 @@ void DX12Render::createGuiPSO() {
 
   vertexShader->Release();
   pixelShader->Release();
+}
+
+void DX12Render::createPerformanceProfiler() {
+  const size_t count = 10;
+
+  //D3D12_RESOURCE_STATE_GENERIC_READ
+  HRESULT hr;
+
+  const D3D12_QUERY_HEAP_DESC desc{
+    D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+    count,
+    0
+  };
+  hr = device->CreateQueryHeap(&desc, IID_PPV_ARGS(&perfomance.queryHeap));
+  throwIfFailed(hr, "Could not create query heap");
+
+  perfomance.queryHeap->SetName(L"Performance query heap");
+
+  perfomance.queryCount = count;
+  perfomance.currentQuery = 0;
+
+  hr = device->CreateCommittedResource(
+    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK),
+    D3D12_HEAP_FLAG_NONE,
+    &CD3DX12_RESOURCE_DESC::Buffer(count*sizeof(uint64_t)),
+    D3D12_RESOURCE_STATE_COPY_DEST,
+    nullptr,
+    IID_PPV_ARGS(&perfomance.buffer)
+  );  
 }
 
 void DX12Render::createDefferedPSO() {

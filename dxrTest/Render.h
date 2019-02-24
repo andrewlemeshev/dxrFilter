@@ -217,6 +217,19 @@ struct Gui {
   ID3D12PipelineState* pso;
 };
 
+struct Profiler {
+  ID3D12QueryHeap* queryHeap;
+  size_t queryCount;
+  size_t currentQuery;
+};
+
+struct TimeProfiler : public Profiler {
+  ID3D12Resource* buffer;
+  uint64_t frequency;
+
+  void timeStamp(ID3D12GraphicsCommandList* cmdList);
+};
+
 enum class GlobalRootSignatureParams : uint32_t {
   OUTPUT_VIEW_SLOT = 0,
   ACCELERATION_STRUCTURE_SLOT,
@@ -298,6 +311,9 @@ public:
   void moveToNextFrame();
 
   ID3D12Device* getDevice() const;
+  ID3D12Resource* getTimeStampResource() const;
+  size_t getTimeStampCount() const;
+  uint64_t getTimeStampFrequency() const;
 private:
   ID3D12Device* device = nullptr;
   IDXGISwapChain3* swapChain = nullptr;
@@ -383,6 +399,10 @@ private:
 
   Gui gui;
 
+  TimeProfiler perfomance;
+
+  void resolveQuery();
+
   void loadModels(std::vector<uint32_t> &indices, std::vector<Vertex> &vertices);
 
   void deinitPSO();
@@ -391,6 +411,8 @@ private:
   void createFontTexture();
   void createGuiBuffers();
   void createGuiPSO();
+
+  void createPerformanceProfiler();
 
   void createDefferedPSO();
 
