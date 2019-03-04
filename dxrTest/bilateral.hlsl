@@ -1,3 +1,8 @@
+#ifndef BILATERAL_HLSL
+#define BILATERAL_HLSL
+
+#include "Shared.h"
+
 #define PI 3.14159265358979323846264338327950288419716939937510
 #define EPS 1e-5
 #define EQUAL_EPSILON 0.0001f
@@ -19,6 +24,10 @@ Texture2D<float4> normals : register(t1);
 Texture2D<float> depths : register(t2);
 Texture2D<uint2> pixelDatas : register(t3);
 
+cbuffer ConstantBuffer : register(b0) {
+  FilterConstantBuffer constantBuffer;
+};
+
 float distance(const uint2 xy, const uint2 ij) {
   const int xi = int(xy.x - ij.x);
   const int yj = int(xy.y - ij.y);
@@ -39,9 +48,13 @@ bool eq(const float4 first, const float4 second) {
   return tmp.x < EQUAL_EPSILON && tmp.y < EQUAL_EPSILON && tmp.z < EQUAL_EPSILON && tmp.w < EQUAL_EPSILON;
 }
 
-[numthreads(1, 1, 1)]
+#define BILATERAL_WORK_GROUP 16
+
+[numthreads(BILATERAL_WORK_GROUP, BILATERAL_WORK_GROUP, 1)]
 void main(uint3 DTid : SV_DispatchThreadID) {
   const uint2 coord = uint2(DTid.x, DTid.y);
+
+  const bool withinBounds = coord.x < resolution.x && coord.y < resolution.y;
 
   const float sigS = max(sigmaS, EPS);
   const float sigL = max(sigmaL, EPS);
@@ -102,27 +115,31 @@ void main(uint3 DTid : SV_DispatchThreadID) {
   // теперь белых точек меньше, но все равно неочень
   //const uint newDiameter = uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * max(abs(l - coef), 0.2f); // 1.0f - coef
   // надо что то придумать с max'ом, это из-за него съезжает немного вбок
-  //const uint newDiameter = uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(l - coef), 0.2f);
-  //const uint newDiameter = uint(coef > 0.07f && coef < 0.93f) * diameter * (dist == 0.0f ? abs(1.0f - coef) : min(dist, 1.0f));
-  //const uint newDiameter = uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
-  //const uint newDiameter = uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
+  //const uint newDiameter = uint(withinBounds) * uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(l - coef), 0.2f);
+  //const uint newDiameter = uint(withinBounds) * uint(coef > 0.07f && coef < 0.93f) * diameter * (dist == 0.0f ? abs(1.0f - coef) : min(dist, 1.0f));
+  const uint newDiameter = uint(withinBounds) * uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
+  //const uint newDiameter = uint(withinBounds) * uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
 
   const uint kernelSize = radius * 2 + 1;
+  //const uint kernelSize = diameter;
   const float sigma = (2 * pow((kernelSize - 1.0) / 6.0, 2)); // make the kernel span 6 sigma
   float result = 0.0f;
   float totalWeight = 0.0f;
 
   // тогда сильно размывается тень, из-за чего появляются проблемы на краях
-  //const uint newDiameter = uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter;
-  const uint newDiameter = uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * abs(1.0f - coef);
+  //const uint newDiameter = uint(withinBounds) * uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter;
+  //const uint newDiameter = uint(withinBounds) * uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * abs(1.0f - coef);
   for (uint i = 0; i < newDiameter; ++i) {
     for (uint j = 0; j < newDiameter; ++j) {
       const int2 offset = int2(radius - i, radius - j);
       const uint2 neighbor = coord + offset;
 
+      const bool withinBoundsLocal = neighbor.x < resolution.x && neighbor.y < resolution.y;
+
       const uint2 neighborPixelData = pixelDatas[neighbor];
       const float neighborCoef = float(neighborPixelData.y) / float(neighborPixelData.x);
       const float invNeighborCoef = abs(1.0f - neighborCoef);
+      const float expCoef = exp(invNeighborCoef / sigma);
 
       const float kernelWeight = exp(-length(float2(offset.x, offset.y)) / sigma);
       //float2 offset = float2(float(offset.x), float(offset.y)) * texelSize;
@@ -137,13 +154,13 @@ void main(uint3 DTid : SV_DispatchThreadID) {
       const float normalWeight = pow(max(0, dot(normal, NTmp)), 128);
       
       //ZWeight = 1;
-      const float weight = ZWeight * normalWeight;
+      const float weight = ZWeight * normalWeight; //  * expCoef
       
       const float2 offsetData = colors[neighbor];
       const float offsetColor = offsetData.x;
       const float dist = offsetData.y;
-      result += offsetColor * kernelWeight * weight; // * invNeighborCoef
-      totalWeight += kernelWeight * weight; //  + dist // сильно четко граница проступает
+      result += offsetColor * kernelWeight * weight * uint(withinBoundsLocal); // * invNeighborCoef
+      totalWeight += kernelWeight * weight * uint(withinBoundsLocal); //  + dist // сильно четко граница проступает
 
       //
 
@@ -263,3 +280,5 @@ void main(uint3 DTid : SV_DispatchThreadID) {
 //  float outFragColor = result / TotalWeight;
 //  return outFragColor;
 //}
+
+#endif

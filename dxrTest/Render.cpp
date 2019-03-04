@@ -203,6 +203,7 @@ DX12Render::DX12Render() {
   fallback.depthBufferHeapIndex = UINT32_MAX;
   fallback.normalBufferHeapIndex = UINT32_MAX;
 
+  memset(&filter, 0, sizeof(Filter));
   filter.filterOutputUAVDescIndex = UINT32_MAX;
   filter.bilateralOutputUAVDescIndex = UINT32_MAX;
   filter.bilateralInputUAVDescIndex = UINT32_MAX;
@@ -217,6 +218,10 @@ DX12Render::DX12Render() {
   filter.depthBufferHeapIndex = UINT32_MAX;
   filter.lastFrameColorHeapIndex = UINT32_MAX;
   filter.lastFrameDepthHeapIndex = UINT32_MAX;
+
+  filter.bilateralBuffer.diameterBilateral = 31;
+  filter.bilateralBuffer.diameterAddition = 13;
+  filter.bilateralBuffer.sigma = (2 * glm::pow((filter.bilateralBuffer.diameterBilateral - 1.0f) / 6.0f, 2));
 
   lightning.outputHeapIndex = UINT32_MAX;
   lightning.shadowHeapIndex = UINT32_MAX;
@@ -1347,10 +1352,15 @@ void DX12Render::filterPart() {
 
   commandList->SetComputeRootDescriptorTable(0, filter.bilateralOutputUAVDesc);
   commandList->SetComputeRootDescriptorTable(1, filter.bilateralInputUAVDesc);
+  commandList->SetComputeRoot32BitConstants(2, sizeof(FilterConstantBuffer) / sizeof(uint32_t), &filter.bilateralBuffer, 0);
 
   commandList->SetPipelineState(filter.bilateralPSO);
 
-  commandList->Dispatch(1280, 720, 1);
+#define BILATERAL_WORK_GROUP 16
+
+  const uint32_t bilateralX = glm::ceil(float(1280) / float(LOCAL_WORK_GROUP));
+  const uint32_t bilateralY = glm::ceil(float(720) / float(LOCAL_WORK_GROUP));
+  commandList->Dispatch(bilateralX, bilateralY, 1);
 
   perfomance.timeStamp(commandList);
 
@@ -1707,6 +1717,10 @@ size_t DX12Render::getTimeStampCount() const {
 
 uint64_t DX12Render::getTimeStampFrequency() const {
   return perfomance.frequency;
+}
+
+FilterConstantBuffer* DX12Render::constantBufferData() {
+  return &filter.bilateralBuffer;
 }
 
 void load(std::string &path, std::vector<uint32_t> &indices, std::vector<Vertex> &vertices) {
@@ -3809,18 +3823,31 @@ void DX12Render::createBilateralPSO() {
   ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
   ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0);
 
-  CD3DX12_ROOT_PARAMETER rootParameters[2];
+  CD3DX12_ROOT_PARAMETER rootParameters[3];
   rootParameters[0].InitAsDescriptorTable(1, &ranges[0]);
   rootParameters[1].InitAsDescriptorTable(1, &ranges[1]);
+  rootParameters[2].InitAsConstants(sizeof(FilterConstantBuffer) / sizeof(uint32_t), 0);
+  //rootParameters[2].InitAsConstantBufferView(0);
+
+  /*rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  rootParameters[2].Constants.ShaderRegister = 0;
+  rootParameters[2].Constants.RegisterSpace = 0;
+  rootParameters[2].Constants.Num32BitValues = sizeof(FilterConstantBuffer) / sizeof(uint32_t);
+  rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;*/
+
+  //assert(_countof(rootParameters) != 3 && "_countof(rootParameters) == 3");
+  //assert(filter.bilateralRootSignature != nullptr);
 
   const CPCreateInfo info{
     L"bilateral.hlsl",
-    _countof(rootParameters),
+    3, //_countof(rootParameters),
     rootParameters,
     &filter.bilateralRootSignature,
     &filter.bilateralPSO
   };
   createComputeShader(info);
+
+  //assert(filter.bilateralRootSignature == nullptr);
 }
 
 void DX12Render::createLightningResources(const uint32_t &width, const uint32_t &height) {

@@ -5,7 +5,7 @@
 
 #define WORKGROUP_SIZE 16
 
-static const uint diameter = 9;
+static const uint diameter = 13;
 static const uint2 resolution = uint2(1280, 720);
 
 RWTexture2D<uint2> output : register(u0);

@@ -142,6 +142,7 @@ struct Filter {
   uint32_t bilateralPixelDataHeapIndex;
 
   ID3D12Resource* constantBuffer;
+  FilterConstantBuffer bilateralBuffer;
   // возможно мне пригодится еще один constant buffer
 
   DescriptorHeap heap;
@@ -314,6 +315,8 @@ public:
   ID3D12Resource* getTimeStampResource() const;
   size_t getTimeStampCount() const;
   uint64_t getTimeStampFrequency() const;
+
+  FilterConstantBuffer* constantBufferData();
 private:
   ID3D12Device* device = nullptr;
   IDXGISwapChain3* swapChain = nullptr;

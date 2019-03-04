@@ -124,6 +124,12 @@ struct FilterConstantData {
   float4x4 projToPrevProj;
 };
 
+struct FilterConstantBuffer {
+  uint diameterBilateral;
+  uint diameterAddition;
+  float sigma;
+};
+
 #ifdef __CPLUSPLUS
 struct ComputeData {
   glm::vec4 pos;
