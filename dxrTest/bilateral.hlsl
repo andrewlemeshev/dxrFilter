@@ -117,8 +117,9 @@ void main(uint3 DTid : SV_DispatchThreadID) {
   // надо что то придумать с max'ом, это из-за него съезжает немного вбок
   //const uint newDiameter = uint(withinBounds) * uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(l - coef), 0.2f);
   //const uint newDiameter = uint(withinBounds) * uint(coef > 0.07f && coef < 0.93f) * diameter * (dist == 0.0f ? abs(1.0f - coef) : min(dist, 1.0f));
-  const uint newDiameter = uint(withinBounds) * uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
+  //const uint newDiameter = uint(withinBounds) * uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
   //const uint newDiameter = uint(withinBounds) * uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
+  const uint newDiameter = diameter;
 
   const uint kernelSize = radius * 2 + 1;
   //const uint kernelSize = diameter;
@@ -218,8 +219,8 @@ void main(uint3 DTid : SV_DispatchThreadID) {
   }
 
   //output[coord] = sumW == 0.0f ? float2(l, dist) : float2(sumC / sumW, dist);
-  output[coord] = totalWeight == 0.0f ? float2(l, dist) : float2(result / totalWeight, dist);
-  //output[coord] = colors[coord];
+  //output[coord] = totalWeight == 0.0f ? float2(l, dist) : float2(result / totalWeight, dist);
+  output[coord] = colors[coord];
 }
 
 

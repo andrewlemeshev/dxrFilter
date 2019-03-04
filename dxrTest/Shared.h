@@ -34,7 +34,7 @@ typedef uint32_t uint;
 #define CONE_INDEX_START 102
 #define CONE_VERTEX_START 88
 
-#define EPSILON 0.001f
+#define EPSILON 0.0001f
 
 struct Viewport {
   float left;

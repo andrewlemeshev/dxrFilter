@@ -51,7 +51,7 @@ float4 calculatePhong(const CalculatePhongData data) {
 
   // Specular component.
   float4 specularColor = float4(0, 0, 0, 0);
-  if (!data.isInShadow) {
+  //if (!data.isInShadow) {
     //const float specularCoef2 = 1.0; 
     //const float specularPower2 = 50;
 
@@ -59,8 +59,8 @@ float4 calculatePhong(const CalculatePhongData data) {
     //float4 Ks = calculateSpecularCoefficient(hitPosition, rayDir, incidentLightRay, normal, specularPower);
     const float4 reflectedLightRay = normalize(reflect(-incidentLightRay, data.normal));
     const float4 Ks = pow(saturate( /*max(*/ dot(reflectedLightRay, normalize(data.rayDir)) /*, 0.0f)*/), data.specularPower);
-    specularColor = data.specularCoef * Ks * lightSpecularColor;
-  }
+    specularColor = data.specularCoef * Ks * lightSpecularColor * (1.0f - data.shadowCoef);
+  //}
 
   // Ambient component.
   // Fake AO: Darken faces with normal facing downwards/away from the sky a little bit.

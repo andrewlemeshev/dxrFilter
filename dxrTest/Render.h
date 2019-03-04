@@ -231,6 +231,26 @@ struct TimeProfiler : public Profiler {
   void timeStamp(ID3D12GraphicsCommandList* cmdList);
 };
 
+enum class Visualize {
+  color,
+  normals,
+  depths,
+  shadows,
+  pixelDatas,
+  bilateral,
+  lightning
+};
+
+struct DebugVisualizer {
+  DescriptorHeap heap;
+
+  D3D12_GPU_DESCRIPTOR_HANDLE texDesc;
+  uint32_t texDescIndex;
+
+  ID3D12RootSignature* rootSignature;
+  ID3D12PipelineState* pso;
+};
+
 enum class GlobalRootSignatureParams : uint32_t {
   OUTPUT_VIEW_SLOT = 0,
   ACCELERATION_STRUCTURE_SLOT,
@@ -294,6 +314,9 @@ public:
   void updateSceneData(const glm::vec4 &cameraPos, const glm::mat4 &viewProj);
 
   void renderGui(const glm::uvec2 &winPos, const glm::uvec2 &winSize);
+
+  // передобавляем в дескриптор таргет
+  void visualize(const Visualize v);
 
   void nextFrame();
   void computePart();

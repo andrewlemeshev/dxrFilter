@@ -252,58 +252,6 @@ float3 randPosOnLightSphere(const float2 k, const float seed) {
   const float3 lightPos = constantBuffer.lightPosition.xyz;
   const float radius = constantBuffer.lightRadius;
 
-  //const float2 p = float2(camPosX + 1.0f, camPosZ + 1.0f);
-
-  //const float nums[] = {
-  //  frac(p.x * k.x),
-  //  frac(p.y * k.y),
-  //  frac(p.x * k.y),
-  //  frac(p.y * k.x),
-  //  frac(k.x / p.x),
-  //  frac(k.y / p.y),
-  //  frac(k.x / p.y),
-  //  frac(k.y / p.x),
-  //  frac(p.x*p.y / k.x),
-  //  frac(p.x*p.y / k.y),
-  //  frac(p.x*p.y * k.x),
-  //  frac(p.x*p.y * k.y)
-  //};
-
-  ///*const int3 sign = int3(random(float2(nums[0], nums[1])) >= 0.5f ? 1 : -1,
-  //                       random(float2(nums[2], nums[3])) >= 0.5f ? 1 : -1,
-  //                       random(float2(nums[4], nums[5])) >= 0.5f ? 1 : -1);
-
-  //const float3 rand = float3(random(float2(nums[6], nums[7])),
-  //                           random(float2(nums[8], nums[9])),
-  //                           random(float2(nums[10], nums[11])));*/
-
-  //const int3 sign = int3(random(float2(nums[6], nums[7])) >= 0.5f ? 1 : -1,
-  //                       random(float2(nums[8], nums[9])) >= 0.5f ? 1 : -1,
-  //                       random(float2(nums[10], nums[11])) >= 0.5f ? 1 : -1);
-
-  //const float3 rand = float3(random(float2(nums[0], nums[1])),
-  //                           random(float2(nums[2], nums[3])),
-  //                           random(float2(nums[4], nums[5])));
-
-  //return lightPos + sign * rand * radius;
-
-  //const float2 tc = k.xy * magic.xy;
-  // scale texture coordinates
-
-  //const float a = seed * magic.z + tc.y - tc.x;
-  //const float3 skewed_seed = float3(a, a, a) + magic.yzw;
-  // scale and skew seed a bit to decrease noise correlation accross pixels
-  // (add some magic numbers to generate three seeds to decrease correlation
-  // between velocity coordinates)
-
-  /*const float seed2 = asfloat(uint(seed));
-  const float2 newTC = tc * seed2;
-  const float r = random(newTC);*/
-
-  //const uint2 DTid = uint2(DispatchRaysIndex().x, DispatchRaysIndex().y);
-  //const uint rngState = (DTid.x * 1973 + DTid.y * 9277 + asuint(seed) * 26699) | 1;
-  //const uint rngState = (DTid.x * 1973 + DTid.y * 9277 + uint(seed) * 26699) | 1;
-
   // нужно поменять рандом, сделать его на основе uint текстуры
   // то есть сгенерить текстуру с рандомными uint'ами
   // чтобы убрать патерн у случайных чисел
@@ -313,14 +261,6 @@ float3 randPosOnLightSphere(const float2 k, const float seed) {
   // нужно понимать че и как работает
 
   float3 velocity;
-  /*velocity.x = cnoise(float3(tc.x, tc.y, skewed_seed.x));
-  velocity.y = cnoise(float3(tc.y, skewed_seed.y, tc.x));
-  velocity.z = cnoise(float3(skewed_seed.z, tc.x, tc.y));*/
-  // use noise to generate random direction
-  // (permutate arguments to decrease correlation even more)
-
-  //velocity = randomInUnitSphere(asuint(a));
-  //velocity = randomInUnitSphere(rngState);
   velocity = randomInUnitSphere();
 
   velocity = normalize(velocity);
@@ -332,7 +272,7 @@ float3 randPosOnLightSphere(const float2 k, const float seed) {
 [shader("raygeneration")]
 void rayGen() {
   const uint2 DTid = uint2(DispatchRaysIndex().x, DispatchRaysIndex().y);
-  const float2 xy = DTid.xy;// +0.5f;
+  const float2 xy = DTid.xy+0.5f;
 
   const float2 k = float2(xy) / float2(DispatchRaysDimensions().xy);
 
@@ -370,7 +310,8 @@ void rayGen() {
   // Shadow component.
   // Trace a shadow ray.
   //constantBuffer.lightPosition.xyz
-  Ray shadowRay = {pos.xyz, normalize(rndPos - pos.xyz)};
+  const float3 dir2 = normalize(rndPos - pos.xyz);
+  Ray shadowRay = {pos.xyz - EPSILON*dir2, dir2};
   ShadowRayPayload load = {true, 0.0f};
   bool shadowRayHit = traceShadowRay(shadowRay, currentRecursionDepth, load);
 
