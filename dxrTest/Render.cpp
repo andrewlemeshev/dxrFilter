@@ -232,6 +232,18 @@ DX12Render::DX12Render() {
   toneMapping.outputUAVDescIndex = UINT32_MAX;
   toneMapping.filterDescIndex = UINT32_MAX;
 
+  memset(&visualizer, 0, sizeof(DebugVisualizer));
+  visualizer.texDescIndex = UINT32_MAX;
+  visualizer.buffer.multiplier = 1.0f;
+  visualizer.buffer.colors = 0;
+  visualizer.buffer.normals = 0;
+  visualizer.buffer.depths = 0;
+  visualizer.buffer.pixelDatas = 0;
+  visualizer.buffer.bilateral = 0;
+  visualizer.buffer.lightning = 1;
+
+  debugType = Visualize::lightning;
+
   gui.fontDescIndex = UINT32_MAX;
 
   uintRandTextHeapIndex = UINT32_MAX;
@@ -771,6 +783,7 @@ void DX12Render::init(HWND hwnd, const uint32_t &width, const uint32_t &height, 
 
   createDefferedPSO();
   createPerformanceProfiler();
+  createDebugVisualizerResources();
 }
 
 void DX12Render::initRT(const uint32_t &width, const uint32_t &height, const GPUBuffer<ComputeData> &boxBuffer, const GPUBuffer<ComputeData> &icosahedronBuffer, const GPUBuffer<ComputeData> &coneBuffer) {
@@ -1098,6 +1111,24 @@ void DX12Render::renderGui(const glm::uvec2 &winPos, const glm::uvec2 &winSize) 
   gui.indices->Unmap(0, &range);
 }
 
+void DX12Render::visualize(const Visualize v) {
+  if (debugType == v) return;
+
+  // функция принимает на вход текстурку и тип и связывает все вместе
+  switch (v) {
+    case Visualize::color:      visualizer.buffer.pixelDatas = 0; rebindDebugSRV(gBuffer.color, colorBufferFormat);                     break;
+    case Visualize::normals:    visualizer.buffer.pixelDatas = 0; rebindDebugSRV(gBuffer.normal, normalBufferFormat);                   break;
+    case Visualize::depths:     visualizer.buffer.pixelDatas = 0; rebindDebugSRV(gBuffer.depth, DXGI_FORMAT_R32_FLOAT);                 break;
+    case Visualize::shadows:    visualizer.buffer.pixelDatas = 0; rebindDebugSRV(fallback.shadowOutput, shadowOutputFormat);            break;
+    case Visualize::temporal:   visualizer.buffer.pixelDatas = 0; rebindDebugSRV(filter.filterOutput, filterOutputFormat);              break;
+    case Visualize::pixelDatas: visualizer.buffer.pixelDatas = 1; rebindDebugSRV(filter.pixelAdditionOutput, DXGI_FORMAT_R32G32_UINT); break;
+    case Visualize::bilateral:  visualizer.buffer.pixelDatas = 0; rebindDebugSRV(filter.bilateralOutput, bilateralOutputFormat);        break;
+    case Visualize::lightning:  visualizer.buffer.pixelDatas = 0; rebindDebugSRV(lightning.output, lightningOutputFormat);              break;
+  }
+
+  debugType = v;
+}
+
 void DX12Render::nextFrame() {
   HRESULT hr;
 
@@ -1411,7 +1442,7 @@ void DX12Render::filterPart() {
 
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
-      CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
+      //CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_SOURCE),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.colorLast, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.depthLast, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST),
@@ -1424,7 +1455,7 @@ void DX12Render::filterPart() {
   
   // мне еще нужно скопировать в ласт буферы
   //commandList->CopyResource(renderTargets[frameIndex], filter.filterOutput);
-  commandList->CopyResource(renderTargets[frameIndex], toneMapping.output);
+  //commandList->CopyResource(renderTargets[frameIndex], toneMapping.output);
   commandList->CopyResource(filter.colorLast, filter.filterOutput);
   commandList->CopyResource(filter.depthLast, gBuffer.depth);
 
@@ -1433,7 +1464,7 @@ void DX12Render::filterPart() {
       CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
       //CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
       //CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT),
-      CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET),
+      //CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET),
       CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.color, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET),
       CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.normal, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET),
       CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.depth, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE),
@@ -1442,11 +1473,47 @@ void DX12Render::filterPart() {
       CD3DX12_RESOURCE_BARRIER::Transition(fallback.raytracingOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
       CD3DX12_RESOURCE_BARRIER::Transition(toneMapping.output, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.bilateralOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-      CD3DX12_RESOURCE_BARRIER::Transition(lightning.output, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+      //CD3DX12_RESOURCE_BARRIER::Transition(lightning.output, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     };
 
     commandList->ResourceBarrier(_countof(barriers), barriers);
   }
+}
+
+void DX12Render::debugPart() {
+  {
+    const D3D12_RESOURCE_BARRIER barriers[] = {
+      CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET)
+    };
+
+    commandList->ResourceBarrier(_countof(barriers), barriers);
+  }
+
+  commandList->RSSetViewports(1, &viewport);
+  commandList->RSSetScissorRects(1, &scissorRect);
+
+  CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(gui.rtvHeap->GetCPUDescriptorHandleForHeapStart(), frameIndex, rtvDescriptorSize);
+
+  commandList->OMSetRenderTargets(1, &rtvHandle, false, nullptr);
+
+  commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+  commandList->SetPipelineState(visualizer.pso);
+  commandList->SetGraphicsRootSignature(visualizer.rootSignature);
+  commandList->SetDescriptorHeaps(1, &visualizer.heap.handle);
+
+  commandList->SetGraphicsRoot32BitConstants(0, sizeof(DebugBuffer) / sizeof(uint32_t), &visualizer.buffer, 0);
+  //commandList->SetGraphicsRootDescriptorTable(1, visualizer.texDesc);
+  //commandList->SetGraphicsRootDescriptorTable(1, D3D12_GPU_DESCRIPTOR_HANDLE{0});
+  commandList->SetGraphicsRootDescriptorTable(1, visualizer.heap.handle->GetGPUDescriptorHandleForHeapStart());
+  //D3D12_GPU_DESCRIPTOR_HANDLE tmp = visualizer.heap.handle->GetGPUDescriptorHandleForHeapStart();
+
+  //throw std::runtime_error("dwqdwd");
+  // Setup render state
+  const float blendFactor[4] = {0.f, 0.f, 0.f, 0.f};
+  commandList->OMSetBlendFactor(blendFactor);
+
+  commandList->DrawInstanced(3, 1, 0, 0);
 }
 
 void DX12Render::guiPart() {
@@ -1512,6 +1579,7 @@ void DX12Render::guiPart() {
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
       CD3DX12_RESOURCE_BARRIER::Transition(renderTargets[frameIndex], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT),
+      CD3DX12_RESOURCE_BARRIER::Transition(lightning.output, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     };
 
     commandList->ResourceBarrier(_countof(barriers), barriers);
@@ -1615,6 +1683,8 @@ void DX12Render::cleanup() {
   SAFE_RELEASE(fallback.rayGenShaderTable)
 
   deinitPSO();
+  SAFE_RELEASE(visualizer.rootSignature)
+  SAFE_RELEASE(visualizer.pso)
 
   CloseHandle(fenceEvent);
 }
@@ -3968,8 +4038,273 @@ void DX12Render::createToneMappingPSO() {
   };
   createComputeShader(info);
 
-  //SAFE_RELEASE(computeShader)
-  //SAFE_RELEASE(errorBuff)
+  toneMapping.rootSignature->SetName(L"Tone mapping root signature");
+  toneMapping.pso->SetName(L"Tone mapping pso");
+}
+
+void DX12Render::createDebugVisualizerResources() {
+  createDebugVisualizerDescriptorHeap();
+  createDebugVisualizePSO();
+}
+
+void DX12Render::createDebugVisualizerDescriptorHeap() {
+  HRESULT hr;
+
+  const uint32_t debugTexture = 1;                     // debug
+  const uint32_t descriptorsCount = debugTexture;
+
+  createDescriptorHeap(descriptorsCount, visualizer.heap, "visualizer descriptor heap");
+
+  //visualizer.texDescIndex = allocateDescriptor(visualizer.heap, &visualizer.texCPUDesc);
+
+  //rebindDebugSRV(lightning.output, lightningOutputFormat);
+
+  //createTextureSRV(visualizer.heap, toneMapping.output, toneMappingOutputFormat, visualizer.texDescIndex, visualizer.texDesc);
+  createTextureSRV(visualizer.heap, gui.font, DXGI_FORMAT_R8G8B8A8_UNORM, visualizer.texDescIndex, visualizer.texDesc);
+}
+
+void DX12Render::createDebugVisualizePSO() {
+  HRESULT hr;
+
+  // create root signature
+
+  // create a descriptor range (descriptor table) and fill it out
+  // this is a range of descriptors inside a descriptor heap
+  /*const D3D12_DESCRIPTOR_RANGE descriptorTableRanges[] = {
+    {
+      D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+      1,
+      0,
+      0,
+      D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND
+    }
+  };
+
+  D3D12_ROOT_PARAMETER param[2] = {};
+  param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  param[0].DescriptorTable.NumDescriptorRanges = 1;
+  param[0].DescriptorTable.pDescriptorRanges = &descriptorTableRanges[0];
+  param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+  param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  param[1].Constants.ShaderRegister = 0;
+  param[1].Constants.RegisterSpace = 0;
+  param[1].Constants.Num32BitValues = sizeof(DebugBuffer) / sizeof(uint32_t);
+  param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;*/
+
+  CD3DX12_DESCRIPTOR_RANGE range[1];
+  range[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+
+  CD3DX12_ROOT_PARAMETER params[2];
+  params[0].InitAsConstants(sizeof(DebugBuffer) / sizeof(uint32_t), 0);
+  params[1].InitAsDescriptorTable(1, &range[0]);
+
+  const D3D12_STATIC_SAMPLER_DESC staticSampler{
+    D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+    D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+    D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+    D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+    0.0f,
+    0,
+    D3D12_COMPARISON_FUNC_ALWAYS,
+    D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
+    0.0f,
+    0.0f,
+    0,
+    0,
+    D3D12_SHADER_VISIBILITY_PIXEL
+  };
+
+  CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+  rootSignatureDesc.Init(
+    _countof(params),
+    params,
+    1,
+    &staticSampler,
+    D3D12_ROOT_SIGNATURE_FLAG_NONE
+  );
+  //D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+
+  if (visualizer.rootSignature == nullptr) {
+    ID3DBlob* signature = nullptr;
+    hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr);
+    throwIfFailed(hr, "Failed to serialize root signature");
+
+  
+    hr = device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&visualizer.rootSignature));
+    throwIfFailed(hr, "Failed to create root signature");
+    visualizer.rootSignature->SetName(L"Visualizer root signature");
+
+    SAFE_RELEASE(signature)
+  }
+
+  // create vertex and pixel shaders
+
+  // when debugging, we can compile the shader files at runtime.
+  // but for release versions, we can compile the hlsl shaders
+  // with fxc.exe to create .cso files, which contain the shader
+  // bytecode. We can load the .cso files at runtime to get the
+  // shader bytecode, which of course is faster than compiling
+  // them at runtime
+
+#if defined(_DEBUG)
+      // Enable better shader debugging with the graphics debugging tools.
+  UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+  UINT compileFlags = 0;
+#endif
+
+  // compile vertex shader
+  ID3DBlob* vertexShader = nullptr; // d3d blob for holding vertex shader bytecode
+  ID3DBlob* errorBuff = nullptr; // a buffer holding the error data if any
+  hr = D3DCompileFromFile(L"debugOutput.hlsl",
+    nullptr,
+    D3D_COMPILE_STANDARD_FILE_INCLUDE,
+    "vertexMain",
+    "vs_5_0",
+    compileFlags,
+    0,
+    &vertexShader,
+    &errorBuff);
+  if (FAILED(hr)) {
+    OutputDebugStringA((char*)errorBuff->GetBufferPointer());
+    throw std::runtime_error("Vertex shader creation error");
+  }
+
+  // fill out a shader bytecode structure, which is basically just a pointer
+  // to the shader bytecode and the size of the shader bytecode
+  const D3D12_SHADER_BYTECODE vertexShaderBytecode = {
+    vertexShader->GetBufferPointer(),
+    vertexShader->GetBufferSize()
+  };
+
+  // compile pixel shader
+  ID3DBlob* pixelShader = nullptr;
+  hr = D3DCompileFromFile(L"debugOutput.hlsl",
+    nullptr,
+    D3D_COMPILE_STANDARD_FILE_INCLUDE,
+    "pixelMain",
+    "ps_5_0",
+    compileFlags,
+    0,
+    &pixelShader,
+    &errorBuff);
+  if (FAILED(hr)) {
+    OutputDebugStringA((char*)errorBuff->GetBufferPointer());
+    throw std::runtime_error("Pixel shader creation error");
+  }
+
+  // fill out shader bytecode structure for pixel shader
+  const D3D12_SHADER_BYTECODE pixelShaderBytecode{
+    pixelShader->GetBufferPointer(),
+    pixelShader->GetBufferSize()
+  };
+
+  // fill out an input layout description structure
+  const D3D12_INPUT_LAYOUT_DESC inputLayoutDesc{
+    nullptr,
+    0
+  };
+
+  const D3D12_DEPTH_STENCILOP_DESC defaultStencilOp{ // a stencil operation structure, again does not really matter since stencil testing is turned off
+    D3D12_STENCIL_OP_KEEP,       // what the stencil operation should do when a pixel fragment fails the stencil test
+    D3D12_STENCIL_OP_KEEP,       // what the stencil operation should do when the stencil test passes but the depth test fails
+    D3D12_STENCIL_OP_KEEP,       // what the stencil operation should do when stencil and depth tests both pass
+    D3D12_COMPARISON_FUNC_ALWAYS // the function the stencil test should use
+  };
+
+  const D3D12_DEPTH_STENCIL_DESC depthDesc{
+    false,                            // enable depth testing
+    D3D12_DEPTH_WRITE_MASK_ALL,       // can write depth data to all of the depth/stencil buffer
+    D3D12_COMPARISON_FUNC_LESS,       // pixel fragment passes depth test if destination pixel's depth is less than pixel fragment's
+    false,                            // disable stencil test
+    D3D12_DEFAULT_STENCIL_READ_MASK,  // a default stencil read mask (doesn't matter at this point since stencil testing is turned off)
+    D3D12_DEFAULT_STENCIL_WRITE_MASK, // a default stencil write mask (also doesn't matter)
+    defaultStencilOp,                 // both front and back facing polygons get the same treatment 
+    defaultStencilOp
+  };
+
+  // create a pipeline state object (PSO)
+
+  // In a real application, you will have many pso's. for each different shader
+  // or different combinations of shaders, different blend states or different rasterizer states,
+  // different topology types (point, line, triangle, patch), or a different number
+  // of render targets you will need a pso
+
+  // VS is the only required shader for a pso. You might be wondering when a case would be where
+  // you only set the VS. It's possible that you have a pso that only outputs data with the stream
+  // output, and not on a render target, which means you would not need anything after the stream
+  // output.
+
+  const DXGI_SAMPLE_DESC sampleDesc{
+    1,  // multisample count (no multisampling, so we just put 1, since we still need 1 sample)
+    0   // default value
+  };
+
+  const D3D12_RASTERIZER_DESC rasterizer{
+    D3D12_FILL_MODE_SOLID, // D3D12_FILL_MODE_WIREFRAME
+    D3D12_CULL_MODE_NONE,  // CullMode 
+    true,                  // FrontCounterClockwise
+    0,                     // DepthBias
+    0.0f,                  // DepthBiasClamp
+    0.0f,                  // SlopeScaledDepthBias
+    false,                 // DepthClipEnable
+    false,                 // MultisampleEnable
+    false,                 // AntialiasedLineEnable
+    0,                     // ForcedSampleCount
+    D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF // ConservativeRaster
+  };
+
+  const D3D12_BLEND_DESC blend{
+    false,
+    false,
+    {
+      true,
+      false,
+      D3D12_BLEND_SRC_ALPHA,
+      D3D12_BLEND_INV_SRC_ALPHA,
+      D3D12_BLEND_OP_ADD,
+      D3D12_BLEND_INV_SRC_ALPHA,
+      D3D12_BLEND_ZERO,
+      D3D12_BLEND_OP_ADD,
+      D3D12_LOGIC_OP_COPY,
+      D3D12_COLOR_WRITE_ENABLE_ALL
+    }
+  };
+
+  const D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{
+    visualizer.rootSignature,      // the root signature that describes the input data this pso needs
+    vertexShaderBytecode,   // structure describing where to find the vertex shader bytecode and how large it is
+    pixelShaderBytecode,    // same as VS but for pixel shader
+    {},                     // D3D12_SHADER_BYTECODE (domain shader)
+    {},                     // D3D12_SHADER_BYTECODE (hull shader)
+    {},                     // D3D12_SHADER_BYTECODE (geometry shader)
+    {},                     // Used to send data from the pipeline (after geometry shader, or after vertex shader if geometry shader is not defined) to your app
+    //CD3DX12_BLEND_DESC(D3D12_DEFAULT), // a default rasterizer state
+    blend,
+    0xffffffff,             // sample mask has to do with multi-sampling. 0xffffffff means point sampling is done
+    //CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT), // a default rasterizer state
+    rasterizer,
+    depthDesc,              // This is the state of the depth/stencil buffer
+    inputLayoutDesc,        // the structure describing our input layout
+    D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, // this is used when a triangle strip topology is defined
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, // type of topology we are drawing
+    1,                     // render target count
+    {DXGI_FORMAT_R8G8B8A8_UNORM}, // format of the render target (8?)
+    DXGI_FORMAT_D32_FLOAT, // explaining the format of each depth/stencil buffer
+    sampleDesc,            // must be the same sample description as the swapchain and depth/stencil buffer
+    0,                     // a bit mask saying which GPU adapter to use
+    {},                    // you can cache PSO's, such as into files, so the next time your initialize the PSO, compilation will happen much much faster
+    D3D12_PIPELINE_STATE_FLAG_NONE // the debug option will give extra information that is helpful when debugging (now off)
+  };
+
+  // create the pso
+  hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&visualizer.pso));
+  throwIfFailed(hr, "Failed to create visualizer graphics pipeline");
+  visualizer.pso->SetName(L"Visualizer graphics pipeline");
+  
+  SAFE_RELEASE(vertexShader)
+  SAFE_RELEASE(pixelShader)
 }
 
 AccelerationStructureBuffers DX12Render::buildBottomLevel(const std::vector<BottomASCreateInfo> &infos) {
@@ -4416,7 +4751,7 @@ void DX12Render::createTextureUAV(DescriptorHeap &heap, ID3D12Resource* res, uin
 void DX12Render::createTextureSRV(DescriptorHeap &heap, ID3D12Resource* res, const DXGI_FORMAT &format, uint32_t &index, D3D12_GPU_DESCRIPTOR_HANDLE &handle) {
   D3D12_CPU_DESCRIPTOR_HANDLE srvDescriptorHandle;
   // указать индекс вторым аргументом может быть полезно для пересоздания дескриптора
-  index = allocateDescriptor(heap, &srvDescriptorHandle);
+  index = allocateDescriptor(heap, &srvDescriptorHandle, index);
 
   D3D12_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
   SRVDesc.Format = format;
@@ -4554,4 +4889,21 @@ void DX12Render::createComputeShader(const CPCreateInfo &info) {
 
   SAFE_RELEASE(computeShader)
   SAFE_RELEASE(errorBuff)
+}
+
+void DX12Render::rebindDebugSRV(ID3D12Resource* res, const DXGI_FORMAT &format) {
+  createTextureSRV(visualizer.heap, res, format, visualizer.texDescIndex, visualizer.texDesc);
+
+  /*D3D12_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
+  SRVDesc.Format = format;
+  SRVDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+  SRVDesc.Texture2D = {
+    0,
+    1,
+    0,
+    0.0f
+  };
+  SRVDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  device->CreateShaderResourceView(res, &SRVDesc, visualizer.texCPUDesc);
+  visualizer.texDesc = CD3DX12_GPU_DESCRIPTOR_HANDLE(visualizer.heap.handle->GetGPUDescriptorHandleForHeapStart(), visualizer.texDescIndex, visualizer.heap.hardwareSize);*/
 }

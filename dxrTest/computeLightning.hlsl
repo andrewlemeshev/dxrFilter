@@ -12,7 +12,7 @@ cbuffer ConstantBuffer : register(b0) {
 };
 //ConstantBuffer<SceneConstantBuffer> constantBuffer : register(b0);
 
-Texture2D<float2> shadows : register(t0);
+Texture2D<float> shadows : register(t0);
 
 Texture2D<float4> colors : register(t1);
 Texture2D<float4> normals : register(t2);

@@ -18,7 +18,7 @@ static const uint2 resolution = uint2(1280, 720);
 
 //RWTexture2D<float4> output : register(u0);
 //Texture2D<float4> colors : register(t0);
-RWTexture2D<float2> output : register(u0);
+RWTexture2D<float> output : register(u0);
 Texture2D<float2> colors : register(t0);
 Texture2D<float4> normals : register(t1);
 Texture2D<float> depths : register(t2);
@@ -220,7 +220,8 @@ void main(uint3 DTid : SV_DispatchThreadID) {
 
   //output[coord] = sumW == 0.0f ? float2(l, dist) : float2(sumC / sumW, dist);
   //output[coord] = totalWeight == 0.0f ? float2(l, dist) : float2(result / totalWeight, dist);
-  output[coord] = colors[coord];
+  output[coord] = totalWeight == 0.0f ? l : result / totalWeight;
+  //output[coord] = colors[coord];
 }
 
 

@@ -54,6 +54,9 @@
     <ClInclude Include="include\imgui\imstb_truetype.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="DebugShared.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dxrTest.cpp">
@@ -110,6 +113,9 @@
       <Filter>Resource Files</Filter>
     </FxCompile>
     <FxCompile Include="gui.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+    <FxCompile Include="debugOutput.hlsl">
       <Filter>Resource Files</Filter>
     </FxCompile>
   </ItemGroup>

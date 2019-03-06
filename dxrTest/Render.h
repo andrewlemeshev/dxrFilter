@@ -19,6 +19,7 @@
 #include "D3D12RaytracingFallback.h"
 
 #include "Shared.h"
+#include "DebugShared.h"
 #include "Buffer.h"
 
 #include "imgui/imgui.h"
@@ -231,21 +232,26 @@ struct TimeProfiler : public Profiler {
   void timeStamp(ID3D12GraphicsCommandList* cmdList);
 };
 
-enum class Visualize {
+enum class Visualize : uint32_t {
   color,
   normals,
   depths,
   shadows,
+  temporal,
   pixelDatas,
   bilateral,
-  lightning
+  lightning,
+  count
 };
 
 struct DebugVisualizer {
   DescriptorHeap heap;
 
+  D3D12_CPU_DESCRIPTOR_HANDLE texCPUDesc;
   D3D12_GPU_DESCRIPTOR_HANDLE texDesc;
   uint32_t texDescIndex;
+
+  DebugBuffer buffer;
 
   ID3D12RootSignature* rootSignature;
   ID3D12PipelineState* pso;
@@ -323,6 +329,7 @@ public:
   void gBufferPart(const uint32_t &boxCount, const uint32_t &icosahedronCount, const uint32_t &coneCount);
   void rayTracingPart();
   void filterPart();
+  void debugPart();
   void guiPart();
   void endFrame();
 
@@ -412,7 +419,7 @@ private:
   DXGI_FORMAT filterOutputFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
   //DXGI_FORMAT bilateralOutputFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
   DXGI_FORMAT pixelAdditionOutputFormat = DXGI_FORMAT_R32G32_UINT;
-  DXGI_FORMAT bilateralOutputFormat = DXGI_FORMAT_R32G32_FLOAT;
+  DXGI_FORMAT bilateralOutputFormat = DXGI_FORMAT_R32_FLOAT;
   Filter filter;
   glm::mat4 oldViewProj;
   FilterConstantData* filterConstantDataPtr = nullptr;
@@ -427,16 +434,14 @@ private:
 
   TimeProfiler perfomance;
 
+  DebugVisualizer visualizer;
+  Visualize debugType;
+
   void resolveQuery();
 
   void loadModels(std::vector<uint32_t> &indices, std::vector<Vertex> &vertices);
 
   void deinitPSO();
-
-  void createGuiDescriptorHeap();
-  void createFontTexture();
-  void createGuiBuffers();
-  void createGuiPSO();
 
   void createPerformanceProfiler();
 
@@ -485,6 +490,15 @@ private:
   void createToneMappingOutputTexture(const uint32_t &width, const uint32_t &height);
   void createToneMappingPSO();
 
+  void createDebugVisualizerResources();
+  void createDebugVisualizerDescriptorHeap();
+  void createDebugVisualizePSO();
+
+  void createGuiDescriptorHeap();
+  void createFontTexture();
+  void createGuiBuffers();
+  void createGuiPSO();
+
   //void buildGeometryDesc(std::array<std::vector<D3D12_RAYTRACING_GEOMETRY_DESC>, bottomLevelCount> &descs);
   //AccelerationStructureBuffers buildBottomLevel(const std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> &geometryDescs, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE);
   AccelerationStructureBuffers buildBottomLevel(const std::vector<BottomASCreateInfo> &infos);
@@ -521,6 +535,8 @@ private:
   void createUAVTexture(const TextureUAVCreateInfo &info);
   void createDescriptorHeap(const uint32_t &descriptorCount, DescriptorHeap &heap, const std::string &name);
   void createComputeShader(const CPCreateInfo &info);
+
+  void rebindDebugSRV(ID3D12Resource* res, const DXGI_FORMAT &format);
 };
 
 #endif
