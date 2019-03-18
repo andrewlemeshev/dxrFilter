@@ -79,7 +79,8 @@ void main(uint3 DTid : SV_DispatchThreadID) {
   const float2 texelSize = 1.0f / float2(resolution);
 
   //float Z = texPosition.Sample(colorSampler, input.uv).z;
-  const float depth = depths[coord];
+  const float depthK = 1.0f;
+  const float depth = depths[coord] * depthK;
   const float Z_X1 = coord.x-1 > 0            ? depths[uint2(coord.x-1, coord.y)] : 1e9;
   const float Z_X2 = coord.x+1 < resolution.x ? depths[uint2(coord.x+1, coord.y)] : 1e9;
   const float Z_Y1 = coord.y-1 > 0            ? depths[uint2(coord.x, coord.y-1)] : 1e9;
@@ -119,13 +120,145 @@ void main(uint3 DTid : SV_DispatchThreadID) {
   //const uint newDiameter = uint(withinBounds) * uint(coef > 0.07f && coef < 0.93f) * diameter * (dist == 0.0f ? abs(1.0f - coef) : min(dist, 1.0f));
   //const uint newDiameter = uint(withinBounds) * uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
   //const uint newDiameter = uint(withinBounds) * uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
-  const uint newDiameter = diameter;
+  uint newDiameter = diameter;
 
   const uint kernelSize = radius * 2 + 1;
   //const uint kernelSize = diameter;
-  const float sigma = (2 * pow((kernelSize - 1.0) / 6.0, 2)); // make the kernel span 6 sigma
+  const float sigma = (2 * pow((kernelSize - 1.0) / 12.0, 2)); // make the kernel span 6 sigma
   float result = 0.0f;
   float totalWeight = 0.0f;
+
+  //float gauss_color_coeff = -0.5 / (sigma_color*sigma_color);
+  //float gauss_space_coeff = -0.5 / (sigma_space*sigma_space);
+
+  //float color_weight[256 * jointChannels];
+  //float space_weight[diameter*diameter];
+  //int space_ofs_jnt[diameter*diameter];
+  //int space_ofs_src[diameter*diameter];
+
+  //int jointChannels = 1;
+  //int srcChannels = 1;
+
+  //for (uint i = 0; i < 256 * jointChannels; ++i) {
+  //  color_weight[i] = exp(i*i*gauss_color_coeff);
+  //}
+
+  //int maxk = 0;
+  //for (int i = -radius; i <= radius; i++) {
+  //  for (int j = -radius; j <= radius; j++) {
+  //    float r = sqrt(float(i*i) + float(j*j));
+  //    if (r > radius) continue;
+
+  //    space_weight[maxk] = exp(r*r*gauss_space_coeff);
+  //    space_ofs_jnt[maxk] = int(i*jim.cols*jointChannels + j * jointChannels);
+  //    space_ofs_src[maxk++] = int(i*sim.cols*srcChannels + j * srcChannels);
+  //  }
+  //}
+
+  //for (uint i = 0; i < height; ++i) {
+  //  for (uint j = 0; j < width; ++j) {
+  //    float sum = 0.0f, wsum = 0.0f;
+  //    const float val0 = ...; // первое значение строки joints?
+
+  //    for (uint k = 0; k < maxk; ++k) {
+  //      const float val = ...; // joints?
+  //      const float vals = ...; // картинка
+  //      const float w = space_weight[k] * color_weight[abs(val-val0)];
+
+  //      sum += vals * w;
+  //      wsum += w;
+  //    }
+
+  //    output[i, j] = sum / wsum;
+  //  }
+  //}
+
+  const float normalK = 1.0f;
+  const uint width123 = 5;
+  for (uint x = 0; x < newDiameter; ++x) {
+    for (uint y = 0; y < width123; ++y) {
+      const int2 offset = int2(radius - x, y);
+      const uint2 neighbor = coord + offset;//int2(offset, y);
+      //const uint2 neighbor = coord + int2(offset, 0);
+      //const float l = length(float2(offset));
+
+      const bool withinBoundsLocal = neighbor.x < resolution.x && neighbor.y < resolution.y;
+
+      const uint2 neighborPixelData = pixelDatas[neighbor];
+      const float neighborCoef = float(neighborPixelData.y) / float(neighborPixelData.x);
+      const float invNeighborCoef = abs(1.0f - neighborCoef);
+      const float expCoef = exp(invNeighborCoef / sigma);
+
+      const float kernelWeight = exp(-length(float2(offset)) / sigma);
+      //float2 offset = float2(float(offset.x), float(offset.y)) * texelSize;
+
+      const float ZTmp = depths[neighbor] * depthK;
+      const float ZDeltaApprox = abs(dot(float2(Z_DDX, Z_DDY), float2(offset.x, offset.y)));
+      //const float ZDeltaApprox = abs(dot(float2(Z_DDX, Z_DDY), float2(offset, 0)));
+      const float ZDelta = abs(depth - ZTmp);
+      float ZWeight = exp(-ZDelta / (ZDeltaApprox + 0.001));
+
+      const float4 NTmp = normals[neighbor];
+      //NTmp = normalize(NTmp * 2 - 1);
+      float normalWeight = pow(max(0, dot(normal, NTmp)), 16) * normalK;
+
+      //ZWeight = 1;
+      //normalWeight = 1;
+      const float weight = ZWeight * normalWeight; //  * expCoef
+
+      const float2 offsetData = colors[neighbor];
+      const float offsetColor = offsetData.x;
+      const float dist = offsetData.y;
+      result += offsetColor * kernelWeight * weight * uint(withinBoundsLocal);// *invNeighborCoef;
+      //result += expCoef * kernelWeight * weight * uint(withinBoundsLocal);
+      totalWeight += kernelWeight * weight * uint(withinBoundsLocal);
+    }
+  }
+
+  //output[coord] = totalWeight == 0.0f ? l : result / totalWeight;
+  //result = 0.0f;
+  //totalWeight = 0.0f;
+
+  for (uint x = 0; x < newDiameter; ++x) {
+    for (uint y = 0; y < width123; ++y) {
+      const int2 offset = int2(y, radius - x);
+      const uint2 neighbor = coord + offset;// int2(y, offset);
+      //const float l = length(float2(offset));
+
+      const bool withinBoundsLocal = neighbor.x < resolution.x && neighbor.y < resolution.y;
+
+      const uint2 neighborPixelData = pixelDatas[neighbor];
+      const float neighborCoef = float(neighborPixelData.y) / float(neighborPixelData.x);
+      const float invNeighborCoef = abs(1.0f - neighborCoef);
+      const float expCoef = exp(invNeighborCoef / sigma);
+
+      const float kernelWeight = exp(-length(float2(offset)) / sigma);
+      //float2 offset = float2(float(offset.x), float(offset.y)) * texelSize;
+
+      const float ZTmp = depths[neighbor] * depthK;
+      const float ZDeltaApprox = abs(dot(float2(Z_DDX, Z_DDY), float2(offset.x, offset.y)));
+      //const float ZDeltaApprox = abs(dot(float2(Z_DDX, Z_DDY), float2(0, offset)));
+      const float ZDelta = abs(depth - ZTmp);
+      float ZWeight = exp(-ZDelta / (ZDeltaApprox + 0.001));
+
+      const float4 NTmp = normals[neighbor];
+      //NTmp = normalize(NTmp * 2 - 1);
+      float normalWeight = pow(max(0, dot(normal, NTmp)), 16) * normalK;
+
+      //ZWeight = 1;
+      //normalWeight = 1;
+      const float weight = ZWeight * normalWeight; //  * expCoef
+
+      const float2 offsetData = colors[neighbor];
+      const float offsetColor = offsetData.x;
+      const float dist = offsetData.y;
+      result += offsetColor * kernelWeight * weight * uint(withinBoundsLocal);
+      //result += expCoef * kernelWeight * weight * uint(withinBoundsLocal);
+      totalWeight += kernelWeight * weight * uint(withinBoundsLocal);
+    }
+  }
+
+  newDiameter = 16;
 
   // тогда сильно размывается тень, из-за чего появляются проблемы на краях
   //const uint newDiameter = uint(withinBounds) * uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter;
@@ -134,6 +267,7 @@ void main(uint3 DTid : SV_DispatchThreadID) {
     for (uint j = 0; j < newDiameter; ++j) {
       const int2 offset = int2(radius - i, radius - j);
       const uint2 neighbor = coord + offset;
+      //const float l = length(float2(offset));
 
       const bool withinBoundsLocal = neighbor.x < resolution.x && neighbor.y < resolution.y;
 
@@ -152,7 +286,7 @@ void main(uint3 DTid : SV_DispatchThreadID) {
       
       const float4 NTmp = normals[neighbor];
       //NTmp = normalize(NTmp * 2 - 1);
-      const float normalWeight = pow(max(0, dot(normal, NTmp)), 128);
+      const float normalWeight = pow(max(0, dot(normal, NTmp)), 16);
       
       //ZWeight = 1;
       const float weight = ZWeight * normalWeight; //  * expCoef
@@ -160,7 +294,8 @@ void main(uint3 DTid : SV_DispatchThreadID) {
       const float2 offsetData = colors[neighbor];
       const float offsetColor = offsetData.x;
       const float dist = offsetData.y;
-      result += offsetColor * kernelWeight * weight * uint(withinBoundsLocal); // * invNeighborCoef
+      result += offsetColor * kernelWeight * weight * uint(withinBoundsLocal);// *invNeighborCoef;
+      //result += expCoef * kernelWeight * weight * uint(withinBoundsLocal);
       totalWeight += kernelWeight * weight * uint(withinBoundsLocal); //  + dist // сильно четко граница проступает
 
       //
@@ -221,6 +356,7 @@ void main(uint3 DTid : SV_DispatchThreadID) {
   //output[coord] = sumW == 0.0f ? float2(l, dist) : float2(sumC / sumW, dist);
   //output[coord] = totalWeight == 0.0f ? float2(l, dist) : float2(result / totalWeight, dist);
   output[coord] = totalWeight == 0.0f ? l : result / totalWeight;
+  //output[coord] = totalWeight == 0.0f ? output[coord]+l : output[coord]+result / totalWeight;
   //output[coord] = colors[coord];
 }
 

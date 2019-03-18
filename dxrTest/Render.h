@@ -517,6 +517,8 @@ private:
     uint32_t height;
     DescriptorHeap* heap;
 
+    D3D12_RESOURCE_STATES initial;
+
     ID3D12Resource** texture;
     D3D12_GPU_DESCRIPTOR_HANDLE* descriptor;
     uint32_t* heapIndex;

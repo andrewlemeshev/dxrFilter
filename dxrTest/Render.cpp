@@ -1239,7 +1239,8 @@ void DX12Render::rayTracingPart() {
     const D3D12_RESOURCE_BARRIER barriers[] = {
       CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.color, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_GENERIC_READ),
       CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.normal, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_GENERIC_READ),
-      CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.depth, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_GENERIC_READ)
+      CD3DX12_RESOURCE_BARRIER::Transition(gBuffer.depth, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_GENERIC_READ),
+      CD3DX12_RESOURCE_BARRIER::Transition(fallback.shadowOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     };
 
     commandList->ResourceBarrier(_countof(barriers), barriers);
@@ -1321,7 +1322,9 @@ void DX12Render::filterPart() {
   {
     const D3D12_RESOURCE_BARRIER barriers[] = {
       CD3DX12_RESOURCE_BARRIER::UAV(fallback.raytracingOutput),
-      CD3DX12_RESOURCE_BARRIER::Transition(fallback.raytracingOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ)
+      CD3DX12_RESOURCE_BARRIER::UAV(fallback.shadowOutput),
+      CD3DX12_RESOURCE_BARRIER::Transition(fallback.raytracingOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ),
+      CD3DX12_RESOURCE_BARRIER::Transition(fallback.shadowOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ)
     };
 
     commandList->ResourceBarrier(_countof(barriers), barriers);
@@ -1349,6 +1352,7 @@ void DX12Render::filterPart() {
     const D3D12_RESOURCE_BARRIER barriers[] = {
       CD3DX12_RESOURCE_BARRIER::UAV(filter.filterOutput),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ),
+      //CD3DX12_RESOURCE_BARRIER::Transition(filter.filterOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ),
       CD3DX12_RESOURCE_BARRIER::Transition(filter.pixelAdditionOutput, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     };
 
@@ -1362,9 +1366,13 @@ void DX12Render::filterPart() {
   commandList->SetComputeRootDescriptorTable(0, filter.pixelAdditionOutputDesc);
   commandList->SetComputeRootDescriptorTable(1, filter.pixelAdditionInputDesc);
 
+  //throw std::runtime_error(std::to_string(filter.pixelAdditionOutputDesc.ptr) + " " + std::to_string(filter.pixelAdditionInputDesc.ptr));
+
   commandList->SetPipelineState(filter.pixelAdditionPSO);
 
-  commandList->Dispatch(1280, 720, 1);
+  const uint32_t dispatch1X = glm::ceil(float(1280) / float(LOCAL_WORK_GROUP));
+  const uint32_t dispatch1Y = glm::ceil(float(720) / float(LOCAL_WORK_GROUP));
+  commandList->Dispatch(dispatch1X, dispatch1Y, 1);
 
   perfomance.timeStamp(commandList);
 
@@ -1379,7 +1387,7 @@ void DX12Render::filterPart() {
 
   commandList->SetComputeRootSignature(filter.bilateralRootSignature);
 
-  commandList->SetDescriptorHeaps(1, &filter.heap.handle);
+  //commandList->SetDescriptorHeaps(1, &filter.heap.handle);
 
   commandList->SetComputeRootDescriptorTable(0, filter.bilateralOutputUAVDesc);
   commandList->SetComputeRootDescriptorTable(1, filter.bilateralInputUAVDesc);
@@ -3425,7 +3433,7 @@ void DX12Render::createShadowOutputResource(const uint32_t &width, const uint32_
     &defaultHeapProperties,
     D3D12_HEAP_FLAG_NONE,
     &uavDesc,
-    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+    D3D12_RESOURCE_STATE_GENERIC_READ,
     nullptr,
     IID_PPV_ARGS(&fallback.shadowOutput)
   );
@@ -3584,7 +3592,7 @@ void DX12Render::createFilterDescriptorHeap() {
 
   const uint32_t filterBuffers = 1;                        // const buffer
   const uint32_t filterTextures = 1+2+2;                   // output, color, depth, last color, last depth
-  const uint32_t bilateralFilter = 5;                      // output, color, normal, depth, pixelData
+  const uint32_t bilateralFilter = 6;                      // output, color, normal, depth, pixelData, buffer
   const uint32_t pixelAdditionFilter = 3;                  // output, color, normal
   const uint32_t descriptorsCount = filterBuffers + filterTextures + bilateralFilter + pixelAdditionFilter;
 
@@ -3825,6 +3833,9 @@ void DX12Render::createPixelAdditionOutputTexture(const uint32_t &width, const u
     width,
     height,
     &filter.heap,
+
+    D3D12_RESOURCE_STATE_GENERIC_READ,
+
     &filter.pixelAdditionOutput,
     &filter.pixelAdditionOutputDesc,
     &filter.pixelAdditionOutputIndex
@@ -3842,8 +3853,6 @@ void DX12Render::createPixelAdditionConstantBuffer() {
 }
 
 void DX12Render::createPixelAdditionPSO() {
-  HRESULT hr;
-
   CD3DX12_DESCRIPTOR_RANGE ranges[2];
   ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
   ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
@@ -3860,6 +3869,9 @@ void DX12Render::createPixelAdditionPSO() {
     &filter.pixelAdditionPSO
   };
   createComputeShader(info);
+
+  filter.pixelAdditionRootSignature->SetName(L"Pixel addition root signature");
+  filter.pixelAdditionPSO->SetName(L"Pixel addition pso");
 }
 
 void DX12Render::createBilateralOutputTexture(const uint32_t &width, const uint32_t &height) {
@@ -3868,6 +3880,9 @@ void DX12Render::createBilateralOutputTexture(const uint32_t &width, const uint3
     width,
     height,
     &filter.heap,
+
+    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+
     &filter.bilateralOutput,
     &filter.bilateralOutputUAVDesc,
     &filter.bilateralOutputUAVDescIndex
@@ -3942,6 +3957,9 @@ void DX12Render::createLightningOutputTexture(const uint32_t &width, const uint3
     width,
     height,
     &lightning.heap,
+
+    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+
     &lightning.output,
     &lightning.outputDescriptor,
     &lightning.outputHeapIndex
@@ -4003,6 +4021,9 @@ void DX12Render::createToneMappingOutputTexture(const uint32_t &width, const uin
     width,
     height,
     &toneMapping.heap,
+
+    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+
     &toneMapping.output,
     &toneMapping.outputUAVDesc,
     &toneMapping.outputUAVDescIndex
@@ -4060,7 +4081,7 @@ void DX12Render::createDebugVisualizerDescriptorHeap() {
   //rebindDebugSRV(lightning.output, lightningOutputFormat);
 
   //createTextureSRV(visualizer.heap, toneMapping.output, toneMappingOutputFormat, visualizer.texDescIndex, visualizer.texDesc);
-  createTextureSRV(visualizer.heap, gui.font, DXGI_FORMAT_R8G8B8A8_UNORM, visualizer.texDescIndex, visualizer.texDesc);
+  //createTextureSRV(visualizer.heap, gui.font, DXGI_FORMAT_R8G8B8A8_UNORM, visualizer.texDescIndex, visualizer.texDesc);
 }
 
 void DX12Render::createDebugVisualizePSO() {
@@ -4708,7 +4729,8 @@ uint32_t DX12Render::allocateDescriptor(DescriptorHeap &heap, D3D12_CPU_DESCRIPT
 
   auto descriptorHeapCpuBase = heap.handle->GetCPUDescriptorHandleForHeapStart();
   if (descriptorIndexToUse >= heap.handle->GetDesc().NumDescriptors) {
-    index = heap.allocatedCount++;
+    index = heap.allocatedCount;
+    ++heap.allocatedCount;
   }
 
   *cpuDescriptor = CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeapCpuBase, index, heap.hardwareSize);
@@ -4740,7 +4762,7 @@ uint32_t DX12Render::createBufferSRV(DescriptorHeap &heap, ID3D12Resource* res, 
 void DX12Render::createTextureUAV(DescriptorHeap &heap, ID3D12Resource* res, uint32_t &index, D3D12_GPU_DESCRIPTOR_HANDLE &handle) {
   D3D12_CPU_DESCRIPTOR_HANDLE uavDescriptorHandle;
   // указать индекс вторым аргументом может быть полезно для пересоздания дескриптора
-  index = allocateDescriptor(heap, &uavDescriptorHandle);
+  index = allocateDescriptor(heap, &uavDescriptorHandle, index);
 
   D3D12_UNORDERED_ACCESS_VIEW_DESC UAVDesc = {};
   UAVDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
@@ -4778,7 +4800,7 @@ void DX12Render::createUAVTexture(const TextureUAVCreateInfo &info) {
     &defaultHeapProperties,
     D3D12_HEAP_FLAG_NONE,
     &uavDesc,
-    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+    info.initial,
     nullptr,
     //IID_PPV_ARGS(&lightning.output)
     IID_PPV_ARGS(info.texture)
