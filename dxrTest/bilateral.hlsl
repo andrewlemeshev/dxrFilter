@@ -109,6 +109,7 @@ void main(uint3 DTid : SV_DispatchThreadID) {
   // размытие слишком резкое (мягче переход от тени к пенубре)
   // не особо понимаю как правильно воспользоваться rayHitDist, может быть мне не нужно нормализованое значение
   const float shadowZero = abs(1.0f - coef);
+  //const float shadowZero = coef;
   const float rayHitDist = min(dist, 1.0f);
   // может быть что то на что то нужно умножить
 
@@ -120,13 +121,21 @@ void main(uint3 DTid : SV_DispatchThreadID) {
   //const uint newDiameter = uint(withinBounds) * uint(coef > 0.07f && coef < 0.93f) * diameter * (dist == 0.0f ? abs(1.0f - coef) : min(dist, 1.0f));
   //const uint newDiameter = uint(withinBounds) * uint(coef > 0.07f && coef < 0.93f) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
   //const uint newDiameter = uint(withinBounds) * uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * max(abs(1.0f - coef), min(dist, 1.0f));
-  uint newDiameter = diameter;
+  //const uint newDiameter = uint(withinBounds) * uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * shadowZero;
+  const uint newDiameter = uint(withinBounds) * uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter;
 
   const uint kernelSize = radius * 2 + 1;
   //const uint kernelSize = diameter;
-  const float sigma = (2 * pow((kernelSize - 1.0) / 12.0, 2)); // make the kernel span 6 sigma
+  const float sigma = (2 * pow(radius / 5.5f, 2)); // make the kernel span 6 sigma
   float result = 0.0f;
   float totalWeight = 0.0f;
+
+  // суть проблемы билатерального фильтра в чем? прежде всего проблема заключается в том,
+  // что фильтр размывает абсолютно все пиксели одинаково, проблема решается развесовкой
+  // так вот развесовка нам должна ответить на какие вопросы? какой вклад в пиксель дают пиксели вокруг
+  // по идее мы еще можем примерно прикинуть необходимый радиус, но изменение радиуса неизбежно нам дадут изменение качества
+  // следовательно по мимо радиуса мы еще должны увеличить веса на некоторых пикселях
+  // а именно при малом радиусе у нас должны быть большие веса
 
   //float gauss_color_coeff = -0.5 / (sigma_color*sigma_color);
   //float gauss_space_coeff = -0.5 / (sigma_space*sigma_space);
@@ -174,7 +183,7 @@ void main(uint3 DTid : SV_DispatchThreadID) {
   //}
 
   const float normalK = 1.0f;
-  const uint width123 = 5;
+  const uint width123 = 10;
   for (uint x = 0; x < newDiameter; ++x) {
     for (uint y = 0; y < width123; ++y) {
       const int2 offset = int2(radius - x, y);
@@ -200,7 +209,7 @@ void main(uint3 DTid : SV_DispatchThreadID) {
 
       const float4 NTmp = normals[neighbor];
       //NTmp = normalize(NTmp * 2 - 1);
-      float normalWeight = pow(max(0, dot(normal, NTmp)), 16) * normalK;
+      float normalWeight = pow(max(0, dot(normal, NTmp)), 128) * normalK;
 
       //ZWeight = 1;
       //normalWeight = 1;
@@ -209,8 +218,8 @@ void main(uint3 DTid : SV_DispatchThreadID) {
       const float2 offsetData = colors[neighbor];
       const float offsetColor = offsetData.x;
       const float dist = offsetData.y;
-      result += offsetColor * kernelWeight * weight * uint(withinBoundsLocal);// *invNeighborCoef;
-      //result += expCoef * kernelWeight * weight * uint(withinBoundsLocal);
+      //result += offsetColor * kernelWeight * weight * uint(withinBoundsLocal);// *invNeighborCoef;
+      result += neighborCoef * kernelWeight * weight * uint(withinBoundsLocal);
       totalWeight += kernelWeight * weight * uint(withinBoundsLocal);
     }
   }
@@ -243,7 +252,7 @@ void main(uint3 DTid : SV_DispatchThreadID) {
 
       const float4 NTmp = normals[neighbor];
       //NTmp = normalize(NTmp * 2 - 1);
-      float normalWeight = pow(max(0, dot(normal, NTmp)), 16) * normalK;
+      float normalWeight = pow(max(0, dot(normal, NTmp)), 128) * normalK;
 
       //ZWeight = 1;
       //normalWeight = 1;
@@ -252,106 +261,108 @@ void main(uint3 DTid : SV_DispatchThreadID) {
       const float2 offsetData = colors[neighbor];
       const float offsetColor = offsetData.x;
       const float dist = offsetData.y;
-      result += offsetColor * kernelWeight * weight * uint(withinBoundsLocal);
-      //result += expCoef * kernelWeight * weight * uint(withinBoundsLocal);
+      //result += offsetColor * kernelWeight * weight * uint(withinBoundsLocal);
+      result += neighborCoef * kernelWeight * weight * uint(withinBoundsLocal);
       totalWeight += kernelWeight * weight * uint(withinBoundsLocal);
     }
   }
 
-  newDiameter = 16;
+  //newDiameter = 32;
 
   // тогда сильно размывается тень, из-за чего появляются проблемы на краях
   //const uint newDiameter = uint(withinBounds) * uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter;
   //const uint newDiameter = uint(withinBounds) * uint(pixelData.y != 0 && pixelData.y != pixelData.x) * diameter * abs(1.0f - coef);
-  for (uint i = 0; i < newDiameter; ++i) {
-    for (uint j = 0; j < newDiameter; ++j) {
-      const int2 offset = int2(radius - i, radius - j);
-      const uint2 neighbor = coord + offset;
-      //const float l = length(float2(offset));
+  //for (uint i = 0; i < newDiameter; ++i) {
+  //  for (uint j = 0; j < newDiameter; ++j) {
+  //    const int2 offset = int2(radius - i, radius - j);
+  //    const uint2 neighbor = coord + offset;
+  //    //const float l = length(float2(offset));
 
-      const bool withinBoundsLocal = neighbor.x < resolution.x && neighbor.y < resolution.y;
+  //    const bool withinBoundsLocal = neighbor.x < resolution.x && neighbor.y < resolution.y;
 
-      const uint2 neighborPixelData = pixelDatas[neighbor];
-      const float neighborCoef = float(neighborPixelData.y) / float(neighborPixelData.x);
-      const float invNeighborCoef = abs(1.0f - neighborCoef);
-      const float expCoef = exp(invNeighborCoef / sigma);
+  //    const uint2 neighborPixelData = pixelDatas[neighbor];
+  //    const float neighborCoef = float(neighborPixelData.y) / float(neighborPixelData.x);
+  //    const float invNeighborCoef = abs(1.0f - neighborCoef);
+  //    const float expCoef = exp(invNeighborCoef / sigma);
 
-      const float kernelWeight = exp(-length(float2(offset.x, offset.y)) / sigma);
-      //float2 offset = float2(float(offset.x), float(offset.y)) * texelSize;
-      
-      const float ZTmp = depths[neighbor];
-      const float ZDeltaApprox = abs(dot(float2(Z_DDX, Z_DDY), float2(offset.x, offset.y)));
-      const float ZDelta = abs(depth - ZTmp);
-      float ZWeight = exp(-ZDelta / (ZDeltaApprox + 0.001));
-      
-      const float4 NTmp = normals[neighbor];
-      //NTmp = normalize(NTmp * 2 - 1);
-      const float normalWeight = pow(max(0, dot(normal, NTmp)), 16);
-      
-      //ZWeight = 1;
-      const float weight = ZWeight * normalWeight; //  * expCoef
-      
-      const float2 offsetData = colors[neighbor];
-      const float offsetColor = offsetData.x;
-      const float dist = offsetData.y;
-      result += offsetColor * kernelWeight * weight * uint(withinBoundsLocal);// *invNeighborCoef;
-      //result += expCoef * kernelWeight * weight * uint(withinBoundsLocal);
-      totalWeight += kernelWeight * weight * uint(withinBoundsLocal); //  + dist // сильно четко граница проступает
+  //    const float kernelWeight = exp(-length(float2(offset.x, offset.y)) / sigma);
+  //    //float2 offset = float2(float(offset.x), float(offset.y)) * texelSize;
+  //    
+  //    const float ZTmp = depths[neighbor];
+  //    const float ZDeltaApprox = abs(dot(float2(Z_DDX, Z_DDY), float2(offset.x, offset.y)));
+  //    const float ZDelta = abs(depth - ZTmp);
+  //    float ZWeight = exp(-ZDelta / (ZDeltaApprox + 0.001));
+  //    
+  //    const float4 NTmp = normals[neighbor];
+  //    //NTmp = normalize(NTmp * 2 - 1);
+  //    float normalWeight = pow(max(0, dot(normal, NTmp)), 128);
+  //    
+  //    //ZWeight = 1;
+  //    //normalWeight = 1;
+  //    const float weight = ZWeight * normalWeight; //  * expCoef
+  //    
+  //    const float2 offsetData = colors[neighbor];
+  //    const float offsetColor = offsetData.x;
+  //    const float dist = offsetData.y;
+  //    //float coef1337 = lerp(0, 1, offsetData.x); // shadowZero
+  //    //result += coef1337 * kernelWeight * weight * uint(withinBoundsLocal);
+  //    result += offsetColor * kernelWeight * weight * uint(withinBoundsLocal);
+  //    totalWeight += kernelWeight * weight * uint(withinBoundsLocal); //  + dist // сильно четко граница проступает
 
-      //
+  //    //
 
-      //const int2 offset = int2(radius - i, radius - j);
-      //const uint2 neighbor = coord + offset;
+  //    //const int2 offset = int2(radius - i, radius - j);
+  //    //const uint2 neighbor = coord + offset;
 
-      //const float4 normalNeighbor = normals[neighbor];
-      //const uint2 neighborPixelData = pixelDatas[neighbor];
-      //const float neighborCoef = float(neighborPixelData.y) / float(neighborPixelData.x);
-      ////if (!eq(normal, normalNeighbor)) continue;
-      //const bool b = eq(normal, normalNeighbor);
+  //    //const float4 normalNeighbor = normals[neighbor];
+  //    //const uint2 neighborPixelData = pixelDatas[neighbor];
+  //    //const float neighborCoef = float(neighborPixelData.y) / float(neighborPixelData.x);
+  //    ////if (!eq(normal, normalNeighbor)) continue;
+  //    //const bool b = eq(normal, normalNeighbor);
 
-      //const float2 offsetData = colors[neighbor];
-      //const float offsetColor = offsetData.x;
-      //const float dist = offsetData.y;
+  //    //const float2 offsetData = colors[neighbor];
+  //    //const float offsetColor = offsetData.x;
+  //    //const float dist = offsetData.y;
 
-      //// короч, мне нужно как то добавить сюда данные о дальности
-      //// причем так чтобы эта дальность увеличивала вес этого пикселя
-      //// чем больше дальность тем больше вес? вообще это по идее не важно
-      //// так как мне нужно чтобы пиксель в котором тень есть давал чуть больше,
-      //// чем пиксель в котором тени нет
-      //// как это сделать? насколько больше?
-      //
-      //// умножение размывает чуть больше пенумбру которая находится у нормальной тени
-      //// это более менее то что нужно, но я не понимаю до конца зависимость
+  //    //// короч, мне нужно как то добавить сюда данные о дальности
+  //    //// причем так чтобы эта дальность увеличивала вес этого пикселя
+  //    //// чем больше дальность тем больше вес? вообще это по идее не важно
+  //    //// так как мне нужно чтобы пиксель в котором тень есть давал чуть больше,
+  //    //// чем пиксель в котором тени нет
+  //    //// как это сделать? насколько больше?
+  //    //
+  //    //// умножение размывает чуть больше пенумбру которая находится у нормальной тени
+  //    //// это более менее то что нужно, но я не понимаю до конца зависимость
 
-      //// суть такова, мне нужно чтобы тень "затухала" по мере удаления от основной тени
-      //// помоему в реальной жизни тень "затухает" не линейно, но мне бы хотя бы и такое поведение
-      //// как это сделать? как раз таки я думал что с этим поможет пересчитать пиксели вокруг
-      //// то есть в квадрате 9х9 есть например 1 пиксель с тенью
+  //    //// суть такова, мне нужно чтобы тень "затухала" по мере удаления от основной тени
+  //    //// помоему в реальной жизни тень "затухает" не линейно, но мне бы хотя бы и такое поведение
+  //    //// как это сделать? как раз таки я думал что с этим поможет пересчитать пиксели вокруг
+  //    //// то есть в квадрате 9х9 есть например 1 пиксель с тенью
 
-      //// короч, считаю количество пикселей
-      //// на картинке получается более менее затухающее изображение с некоторыми артефактами
-      //// разница между верхним и нижними значениями сильно уменьшилась
-      //// меня лишь беспокоят артефакты на самых краях, 
-      //// но с другой стороны нам должен помочь rayHitDist 
-      //// я вообще могу просто откидывать ситуации в которых там меньше 10% попаданий
-      //// но скорее всего мне нужно будет это делать по умному, 
-      //// например мало процентов и большой хит - откидываем
-      //// что делать с остальным? 
-      //// вообще билатеральный фильтр по этим значениям может сделать все даже лучше чем с расстояниями
+  //    //// короч, считаю количество пикселей
+  //    //// на картинке получается более менее затухающее изображение с некоторыми артефактами
+  //    //// разница между верхним и нижними значениями сильно уменьшилась
+  //    //// меня лишь беспокоят артефакты на самых краях, 
+  //    //// но с другой стороны нам должен помочь rayHitDist 
+  //    //// я вообще могу просто откидывать ситуации в которых там меньше 10% попаданий
+  //    //// но скорее всего мне нужно будет это делать по умному, 
+  //    //// например мало процентов и большой хит - откидываем
+  //    //// что делать с остальным? 
+  //    //// вообще билатеральный фильтр по этим значениям может сделать все даже лучше чем с расстояниями
 
-      //const float distS = length(float2(offset)) * dist * (0.5f);
-      ////float distL = lum(offsetColor) - l;
-      ////const float distL = offsetColor - l;
-      //const float distL = neighborCoef - coef;
+  //    //const float distS = length(float2(offset)) * dist * (0.5f);
+  //    ////float distL = lum(offsetColor) - l;
+  //    ////const float distL = offsetColor - l;
+  //    //const float distL = neighborCoef - coef;
 
-      //const float wS = exp(facS*float(distS*distS));
-      //const float wL = exp(facL*float(distL*distL));
-      //const float w = wS * wL * float(b);
+  //    //const float wS = exp(facS*float(distS*distS));
+  //    //const float wL = exp(facL*float(distL*distL));
+  //    //const float w = wS * wL * float(b);
 
-      //sumW += w;
-      //sumC += offsetColor * w;
-    }
-  }
+  //    //sumW += w;
+  //    //sumC += offsetColor * w;
+  //  }
+  //}
 
   //output[coord] = sumW == 0.0f ? float2(l, dist) : float2(sumC / sumW, dist);
   //output[coord] = totalWeight == 0.0f ? float2(l, dist) : float2(result / totalWeight, dist);

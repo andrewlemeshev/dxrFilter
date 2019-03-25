@@ -147,6 +147,7 @@ struct Filter {
   // возможно мне пригодится еще один constant buffer
 
   DescriptorHeap heap;
+  DescriptorHeap pixelAdditionHeap;
 
   ID3D12RootSignature* rootSignature;
   ID3D12PipelineState* pso;
@@ -250,6 +251,10 @@ struct DebugVisualizer {
   D3D12_CPU_DESCRIPTOR_HANDLE texCPUDesc;
   D3D12_GPU_DESCRIPTOR_HANDLE texDesc;
   uint32_t texDescIndex;
+
+  D3D12_CPU_DESCRIPTOR_HANDLE texUintCPUDesc;
+  D3D12_GPU_DESCRIPTOR_HANDLE texUintDesc;
+  uint32_t texUintDescIndex;
 
   DebugBuffer buffer;
 
@@ -471,6 +476,7 @@ private:
   void createFilterConstantBuffer();
   void createFilterPSO();
 
+  void createPixelAdditionDescriptorHeap();
   void createPixelAdditionOutputTexture(const uint32_t &width, const uint32_t &height);
   void createPixelAdditionConstantBuffer();
   void createPixelAdditionPSO();

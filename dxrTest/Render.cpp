@@ -234,6 +234,7 @@ DX12Render::DX12Render() {
 
   memset(&visualizer, 0, sizeof(DebugVisualizer));
   visualizer.texDescIndex = UINT32_MAX;
+  visualizer.texUintDescIndex = UINT32_MAX;
   visualizer.buffer.multiplier = 1.0f;
   visualizer.buffer.colors = 0;
   visualizer.buffer.normals = 0;
@@ -1121,7 +1122,7 @@ void DX12Render::visualize(const Visualize v) {
     case Visualize::depths:     visualizer.buffer.pixelDatas = 0; rebindDebugSRV(gBuffer.depth, DXGI_FORMAT_R32_FLOAT);                 break;
     case Visualize::shadows:    visualizer.buffer.pixelDatas = 0; rebindDebugSRV(fallback.shadowOutput, shadowOutputFormat);            break;
     case Visualize::temporal:   visualizer.buffer.pixelDatas = 0; rebindDebugSRV(filter.filterOutput, filterOutputFormat);              break;
-    case Visualize::pixelDatas: visualizer.buffer.pixelDatas = 1; rebindDebugSRV(filter.pixelAdditionOutput, DXGI_FORMAT_R32G32_UINT); break;
+    case Visualize::pixelDatas: visualizer.buffer.pixelDatas = 1; /*rebindDebugSRV(filter.pixelAdditionOutput, DXGI_FORMAT_R32G32_UINT);*/ break;
     case Visualize::bilateral:  visualizer.buffer.pixelDatas = 0; rebindDebugSRV(filter.bilateralOutput, bilateralOutputFormat);        break;
     case Visualize::lightning:  visualizer.buffer.pixelDatas = 0; rebindDebugSRV(lightning.output, lightningOutputFormat);              break;
   }
@@ -1361,7 +1362,7 @@ void DX12Render::filterPart() {
 
   commandList->SetComputeRootSignature(filter.pixelAdditionRootSignature);
 
-  commandList->SetDescriptorHeaps(1, &filter.heap.handle);
+  commandList->SetDescriptorHeaps(1, &filter.pixelAdditionHeap.handle);
 
   commandList->SetComputeRootDescriptorTable(0, filter.pixelAdditionOutputDesc);
   commandList->SetComputeRootDescriptorTable(1, filter.pixelAdditionInputDesc);
@@ -1387,7 +1388,7 @@ void DX12Render::filterPart() {
 
   commandList->SetComputeRootSignature(filter.bilateralRootSignature);
 
-  //commandList->SetDescriptorHeaps(1, &filter.heap.handle);
+  commandList->SetDescriptorHeaps(1, &filter.heap.handle);
 
   commandList->SetComputeRootDescriptorTable(0, filter.bilateralOutputUAVDesc);
   commandList->SetComputeRootDescriptorTable(1, filter.bilateralInputUAVDesc);
@@ -1511,9 +1512,10 @@ void DX12Render::debugPart() {
   commandList->SetDescriptorHeaps(1, &visualizer.heap.handle);
 
   commandList->SetGraphicsRoot32BitConstants(0, sizeof(DebugBuffer) / sizeof(uint32_t), &visualizer.buffer, 0);
-  //commandList->SetGraphicsRootDescriptorTable(1, visualizer.texDesc);
+  commandList->SetGraphicsRootDescriptorTable(1, visualizer.texDesc);
+  commandList->SetGraphicsRootDescriptorTable(2, visualizer.texUintDesc);
   //commandList->SetGraphicsRootDescriptorTable(1, D3D12_GPU_DESCRIPTOR_HANDLE{0});
-  commandList->SetGraphicsRootDescriptorTable(1, visualizer.heap.handle->GetGPUDescriptorHandleForHeapStart());
+  //commandList->SetGraphicsRootDescriptorTable(1, visualizer.heap.handle->GetGPUDescriptorHandleForHeapStart());
   //D3D12_GPU_DESCRIPTOR_HANDLE tmp = visualizer.heap.handle->GetGPUDescriptorHandleForHeapStart();
 
   //throw std::runtime_error("dwqdwd");
@@ -3574,6 +3576,7 @@ void DX12Render::createFilterResources(const uint32_t &width, const uint32_t &he
   createFilterConstantBuffer();
   createFilterPSO();
 
+  createPixelAdditionDescriptorHeap();
   createPixelAdditionOutputTexture(width, height);
   createPixelAdditionConstantBuffer();
   createPixelAdditionPSO();
@@ -3827,12 +3830,21 @@ void DX12Render::createFilterPSO() {
   SAFE_RELEASE(errorBuff)
 }
 
+void DX12Render::createPixelAdditionDescriptorHeap() {
+  HRESULT hr;
+
+  const uint32_t pixelAdditionFilter = 3;                  // output, color, normal
+  const uint32_t descriptorsCount = pixelAdditionFilter;
+
+  createDescriptorHeap(descriptorsCount, filter.pixelAdditionHeap, "pixel addition descriptor heap");
+}
+
 void DX12Render::createPixelAdditionOutputTexture(const uint32_t &width, const uint32_t &height) {
   const TextureUAVCreateInfo info{
     pixelAdditionOutputFormat,
     width,
     height,
-    &filter.heap,
+    &filter.pixelAdditionHeap,
 
     D3D12_RESOURCE_STATE_GENERIC_READ,
 
@@ -3844,8 +3856,8 @@ void DX12Render::createPixelAdditionOutputTexture(const uint32_t &width, const u
   filter.pixelAdditionOutput->SetName(L"Pixel addition output resource");
 
   //createTextureSRV(filter.heap, filter.filterOutput, filterOutputFormat, filter.bilateralInputUAVDescIndex, filter.bilateralInputUAVDesc);
-  createTextureSRV(filter.heap, fallback.shadowOutput, shadowOutputFormat, filter.pixelAdditionInputIndex, filter.pixelAdditionInputDesc);
-  createTextureSRV(filter.heap, gBuffer.normal, normalBufferFormat, filter.pixelAdditionNormalIndex, filter.pixelAdditionNormalDesc);
+  createTextureSRV(filter.pixelAdditionHeap, fallback.shadowOutput, shadowOutputFormat, filter.pixelAdditionInputIndex, filter.pixelAdditionInputDesc);
+  createTextureSRV(filter.pixelAdditionHeap, gBuffer.normal, normalBufferFormat, filter.pixelAdditionNormalIndex, filter.pixelAdditionNormalDesc);
 }
 
 void DX12Render::createPixelAdditionConstantBuffer() {
@@ -3893,7 +3905,7 @@ void DX12Render::createBilateralOutputTexture(const uint32_t &width, const uint3
   //createTextureSRV(filter.heap, filter.filterOutput, filterOutputFormat, filter.bilateralInputUAVDescIndex, filter.bilateralInputUAVDesc);
   createTextureSRV(filter.heap, fallback.shadowOutput, shadowOutputFormat, filter.bilateralInputUAVDescIndex, filter.bilateralInputUAVDesc);
   createTextureSRV(filter.heap, gBuffer.normal, normalBufferFormat, filter.bilateralNormalHeapIndex, filter.bilateralNormalDesc);
-  createTextureSRV(filter.heap, gBuffer.depth, DXGI_FORMAT_R32_FLOAT, filter.bilateralNormalHeapIndex, filter.bilateralNormalDesc);
+  createTextureSRV(filter.heap, gBuffer.depth, DXGI_FORMAT_R32_FLOAT, filter.bilateralDepthHeapIndex, filter.bilateralDepthDesc);
   createTextureSRV(filter.heap, filter.pixelAdditionOutput, pixelAdditionOutputFormat, filter.bilateralPixelDataHeapIndex, filter.bilateralPixelDataDesc);
 }
 
@@ -4071,7 +4083,7 @@ void DX12Render::createDebugVisualizerResources() {
 void DX12Render::createDebugVisualizerDescriptorHeap() {
   HRESULT hr;
 
-  const uint32_t debugTexture = 1;                     // debug
+  const uint32_t debugTexture = 2;                     // debug
   const uint32_t descriptorsCount = debugTexture;
 
   createDescriptorHeap(descriptorsCount, visualizer.heap, "visualizer descriptor heap");
@@ -4082,6 +4094,7 @@ void DX12Render::createDebugVisualizerDescriptorHeap() {
 
   //createTextureSRV(visualizer.heap, toneMapping.output, toneMappingOutputFormat, visualizer.texDescIndex, visualizer.texDesc);
   //createTextureSRV(visualizer.heap, gui.font, DXGI_FORMAT_R8G8B8A8_UNORM, visualizer.texDescIndex, visualizer.texDesc);
+  createTextureSRV(visualizer.heap, filter.pixelAdditionOutput, pixelAdditionOutputFormat, visualizer.texUintDescIndex, visualizer.texUintDesc);
 }
 
 void DX12Render::createDebugVisualizePSO() {
@@ -4113,12 +4126,14 @@ void DX12Render::createDebugVisualizePSO() {
   param[1].Constants.Num32BitValues = sizeof(DebugBuffer) / sizeof(uint32_t);
   param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;*/
 
-  CD3DX12_DESCRIPTOR_RANGE range[1];
+  CD3DX12_DESCRIPTOR_RANGE range[2];
   range[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+  range[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 1);
 
-  CD3DX12_ROOT_PARAMETER params[2];
+  CD3DX12_ROOT_PARAMETER params[3];
   params[0].InitAsConstants(sizeof(DebugBuffer) / sizeof(uint32_t), 0);
   params[1].InitAsDescriptorTable(1, &range[0]);
+  params[2].InitAsDescriptorTable(1, &range[1]);
 
   const D3D12_STATIC_SAMPLER_DESC staticSampler{
     D3D12_FILTER_MIN_MAG_MIP_LINEAR,
@@ -4914,7 +4929,11 @@ void DX12Render::createComputeShader(const CPCreateInfo &info) {
 }
 
 void DX12Render::rebindDebugSRV(ID3D12Resource* res, const DXGI_FORMAT &format) {
-  createTextureSRV(visualizer.heap, res, format, visualizer.texDescIndex, visualizer.texDesc);
+  //if (format == DXGI_FORMAT_R32G32_UINT) {
+    
+  //} else {
+    createTextureSRV(visualizer.heap, res, format, visualizer.texDescIndex, visualizer.texDesc);
+  //}
 
   /*D3D12_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
   SRVDesc.Format = format;

@@ -3,6 +3,8 @@
 
 #include "DebugShared.h"
 
+static const uint2 resolution = uint2(1280, 720);
+
 // короче не работает - черный экран
 // где я мог напортачить? чет не очень понимаю
 // нужно проверить пиксом
@@ -41,6 +43,7 @@ cbuffer constantBuffer : register(b0) {
 
 SamplerState sampler0 : register(s0);
 Texture2D debug : register(t0);
+Texture2D<uint2> pixelDatas : register(t1);
 //Texture2D colors : register(t1);
 //Texture2D normals : register(t2);
 //Texture2D depths : register(t3);
@@ -59,7 +62,10 @@ FS_OUTPUT pixelMain(const VS_OUTPUT vs) {
 
   output.color = debug.Sample(sampler0, vs.uv.xy);
   if (bool(debugBuffer.pixelDatas)) {
-    output.color = float4(float(output.color.x) / float(output.color.y), 0.0f, 0.0f, 1.0f);
+    const uint2 coord = resolution * vs.uv.xy;
+    //output.color = float4(float(pixelDatas.x) / float(pixelDatas.y), 0.0f, 0.0f, 1.0f);
+    const uint2 pixelData = pixelDatas[coord];
+    output.color = float4(float(pixelData.y) / float(pixelData.x), 0.0f, 0.0f, 1.0f);
   } else {
     output.color *= debugBuffer.multiplier;
   }

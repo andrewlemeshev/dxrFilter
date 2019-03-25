@@ -26,42 +26,80 @@ void main(const uint3 groupID : SV_GroupID,
           const uint3 groupThreadID : SV_GroupThreadID,
           const uint  groupIndex : SV_GroupIndex,
           const uint3 DTid : SV_DispatchThreadID) {
-  const uint radius = diameter / 2;
-  //const uint2 coord = uint2(groupID.x, groupID.y);
   const uint2 coord = uint2(DTid.x, DTid.y);
   const float4 normal = normals[coord];
-  //const uint shaderCount = (diameter + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+  //const float2 shadow = colors[coord];
+  const int radius = diameter / 2;
+  //const float4 tmp = normal * shadow.x;
+  //output[coord] = uint2(asuint(tmp.x), asuint(tmp.y));
 
-  pixelsCount = 0;
-  shadowsCount = 0;
+  uint2 pix = uint2(0, 0);
+  for (int x = -radius; x < radius; ++x) {
+    for (int y = -radius; y < radius; ++y) {
+      //uint2 pix = output[coord];
 
-  for (int i = -radius; i < radius; ++i) {
-    for (int j = -radius; j < radius; ++j) {
-      uint2 pix = output[coord];
-
-      const int2 offset = int2(i, j);
+      const int2 offset = int2(x, y);
       const uint2 neighbor = coord + offset;
 
-      //const bool withinBounds = neighbor.x < resolution.x && neighbor.y < resolution.y;
+      const bool withinBounds = neighbor.x < resolution.x && neighbor.y < resolution.y;
+      //const bool withinBounds = true;
 
       //const uint2 finalCoord = neighbor * uint(withinBounds);
       const uint2 finalCoord = neighbor;
 
       const float2 shadow = colors[finalCoord];
       const float4 neighborNormal = normals[finalCoord];
-      //const bool equal = eq(normal, neighborNormal);
-      const bool equal = true;
+      const bool equal = eq(normal, neighborNormal);
+      //const bool equal = true;
 
-      /*pix.x += uint(withinBounds && equal);
-      pix.y += uint(withinBounds && equal && shadow.x > 0.0f);*/
-      /*pix.x += uint(equal);
-      pix.y += uint(equal && shadow.x > 0.0f);*/
-      pix.x += 1;
-      pix.y += 1;
-
-      output[coord] = pix;
+      pix.x += uint(withinBounds && equal);
+      pix.y += uint(withinBounds && equal && shadow.x > 0.0f);
+      //pix.x += uint(equal);
+      //pix.y += uint(equal && shadow.x > 0.0f);
+      //pix.x += 1;
+      //pix.y += 1;
     }
   }
+
+  output[coord] = pix;
+
+  return;
+
+  //const uint radius = diameter / 2;
+  ////const uint2 coord = uint2(groupID.x, groupID.y);
+  //const float4 normal = normals[coord];
+  ////const uint shaderCount = (diameter + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
+
+  //pixelsCount = 0;
+  //shadowsCount = 0;
+
+  //for (int i = -radius; i < radius; ++i) {
+  //  for (int j = -radius; j < radius; ++j) {
+  //    uint2 pix = output[coord];
+
+  //    const int2 offset = int2(i, j);
+  //    const uint2 neighbor = coord + offset;
+
+  //    //const bool withinBounds = neighbor.x < resolution.x && neighbor.y < resolution.y;
+
+  //    //const uint2 finalCoord = neighbor * uint(withinBounds);
+  //    const uint2 finalCoord = neighbor;
+
+  //    const float2 shadow = colors[finalCoord];
+  //    const float4 neighborNormal = normals[finalCoord];
+  //    //const bool equal = eq(normal, neighborNormal);
+  //    const bool equal = true;
+
+  //    /*pix.x += uint(withinBounds && equal);
+  //    pix.y += uint(withinBounds && equal && shadow.x > 0.0f);*/
+  //    /*pix.x += uint(equal);
+  //    pix.y += uint(equal && shadow.x > 0.0f);*/
+  //    pix.x += 1;
+  //    pix.y += 1;
+
+  //    output[coord] = pix;
+  //  }
+  //}
 
   //GroupMemoryBarrierWithGroupSync();
 
